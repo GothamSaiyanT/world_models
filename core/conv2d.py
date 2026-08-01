@@ -3,82 +3,114 @@ import torch
 from core.parameter import Parameter
 from core.module import Module
 
+
 class Conv2D(Module):
 
     def __init__(
-            self,
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride =1,
-            padding = 0
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        padding=0
     ):
         super().__init__()
+
         self.in_channels = in_channels
-
         self.out_channels = out_channels
-
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
 
-        #He initialization
-        fan_in = in_channels * kernel_size * kernel_size
-
-        std = (2.0 / fan_in)** 0.5
-
-        weights = torch.randn(
-            out_channels,
-            in_channels,
-            kernel_size,
+        fan_in = (
+            in_channels *
+            kernel_size *
             kernel_size
-        ) * std
+        )
 
-        self.weight = Parameter(weights)
-        self.bias  =Parameter(torch.zeros(out_channels))
+        std = (2.0 / fan_in) ** 0.5
 
-    def forward(self,x):
-        #we need to save the original for a case where we are doing backpropagation
+        self.weight = Parameter(
+
+            torch.randn(
+                out_channels,
+                in_channels,
+                kernel_size,
+                kernel_size
+            ) * std
+
+        )
+
+        self.bias = Parameter(
+
+            torch.zeros(out_channels)
+
+        )
+
+    def forward(self, x):
+
         self.input = x
 
-        batch_size,channels,height,width = x.shape
-        out_height = (height - self.kernel_size + 2 * self.padding)// self.stride + 1
-        out_width = (width - self.kernel_size + 2*self.padding)//self.stride + 1
+        batch_size, channels, height, width = x.shape
 
-        output = torch.zeros(
+        k = self.kernel_size
+        s = self.stride
+
+        out_height = (
+            height - k
+        ) // s + 1
+
+        out_width = (
+            width - k
+        ) // s + 1
+
+        weights = self.weight.data
+        bias = self.bias.data
+
+        output = torch.empty(
             batch_size,
             self.out_channels,
             out_height,
-            out_width
+            out_width,
+            device=x.device,
+            dtype=x.dtype
         )
 
         for b in range(batch_size):
-            for f in range(self.out_channels):
-                for i in range(out_height):
-                    for j in range(out_width):
-                        
-                        row_start = i * self.stride
-                        col_start = j * self.stride
 
-                        patch = x[
-                            b,
-                            :,
-                            row_start:row_start + self.kernel_size,
-                            col_start:col_start + self.kernel_size
-                        ]
+            for i in range(out_height):
 
-                        kernel = self.weight.data[f]
+                row = i * s
 
-                        value = torch.sum(
-                            patch * kernel
-                        )
+                for j in range(out_width):
 
-                        value +=self.bias.data[f]
+                    col = j * s
 
-                        output[b,f,i,j] = value
+                    patch = x[
+                        b,
+                        :,
+                        row:row + k,
+                        col:col + k
+                    ]
 
+                    values = (
+                        weights * patch
+                    ).sum(dim=(1, 2, 3))
+
+                    values += bias
+
+                    output[
+                        b,
+                        :,
+                        i,
+                        j
+                    ] = values
 
         return output
 
     def parameters(self):
-        return [self.weight,self.bias]
+
+        return [
+            self.weight,
+            self.bias
+        ]
