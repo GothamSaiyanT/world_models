@@ -19,6 +19,15 @@ class SGD:
         with torch.no_grad():
 
             for parameter in self.parameters:
+                
+                            print(
+                                    "Leaf:",
+                                    parameter.data.is_leaf,
+                                    "Grad:",
+                                    parameter.data.grad is not None,
+                                    "Shape:",
+                                    parameter.data.shape
+                                   )
 
                 if parameter.data.grad is None:
                     continue

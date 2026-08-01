@@ -50,7 +50,7 @@ def main():
         batch_size=32
     )
 
-    epochs = 30
+    epochs = 1
     print("DEBUG EPOCH VALUE:", epochs)
     best_loss = float("inf")
 
