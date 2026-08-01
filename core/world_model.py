@@ -115,6 +115,11 @@ class WorldModel(Module):
 
         for parameter in self.parameters():
 
-            parameter.data = parameter.data.to(device)
+            parameter.data = (
+                parameter.data
+                .detach()
+                .to(device)
+                .requires_grad_(parameter.requires_grad)
+            )
 
         return self
