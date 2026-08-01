@@ -25,13 +25,8 @@ class SGD:
                 if parameter.data.grad is None:
                     continue
                     
-                before = parameter.data.clone()
 
                 parameter.data -= (
                     self.learning_rate *
                     parameter.data.grad
                 )
-                
-                change = torch.sum(torch.abs(before - parameter.data))
-                
-                print("Weight update:", change.item())
