@@ -101,3 +101,10 @@ class WorldModel(Module):
                 )
 
             )
+            
+    def save(self, filepath):
+
+        np.savez(
+            filepath,
+            **self.state_dict()
+        )
