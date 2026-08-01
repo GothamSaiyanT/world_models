@@ -91,16 +91,19 @@ class WorldModel(Module):
         weights = np.load(filepath)
 
         parameters = self.parameters()
+        
+        with torch.no_grad():
 
-        for index, parameter in enumerate(parameters):
+            for index, parameter in enumerate(parameters):
 
-            parameter.data.copy_(
+                parameter.data.copy_(
 
-                torch.tensor(
-                    weights[f"param_{index}"]
+                    torch.tensor(
+                        weights[f"param_{index}"]
+                        dtype=parameter.data.dtype
+                    )
+
                 )
-
-            )
             
     def save(self, filepath):
 
