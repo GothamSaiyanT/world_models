@@ -12,7 +12,7 @@ def show_prediction(current,
 
     current = current.squeeze().cpu().numpy()
     prediction = prediction.squeeze().detach().cpu().numpy()
-    target = target.squeeze().cpu().numpy()
+    target = target.squeeze().detach().cpu().numpy()
 
     figure, axes = plt.subplots(
         1,
