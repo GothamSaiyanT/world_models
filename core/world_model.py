@@ -99,7 +99,7 @@ class WorldModel(Module):
                 parameter.data.copy_(
 
                     torch.tensor(
-                        weights[f"param_{index}"]
+                        weights[f"param_{index}"],
                         dtype=parameter.data.dtype
                     )
 
