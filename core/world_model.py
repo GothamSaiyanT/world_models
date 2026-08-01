@@ -111,3 +111,10 @@ class WorldModel(Module):
             filepath,
             **self.state_dict()
         )
+    def to(self, device):
+
+        for parameter in self.parameters():
+
+            parameter.data = parameter.data.to(device)
+
+        return self

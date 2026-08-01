@@ -17,10 +17,22 @@ class Trainer:
 
         self.model = model
 
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available()
+            else "cpu"
+        )
+
+        print(f"Training on: {self.device}")
+
+        # Move every parameter to the device
+        self.model.to(self.device)
+
         self.dataloader = DataLoader(
             dataset,
             batch_size=batch_size,
-            shuffle=True
+            shuffle=True,
+            num_workers=2,
+            pin_memory=torch.cuda.is_available()
         )
 
         self.criterion = MSELoss()
@@ -34,21 +46,34 @@ class Trainer:
 
         self.model.train()
 
-        total_loss = 0
+        total_loss = 0.0
 
-        for batch_index, (current_frame, action, next_frame) in enumerate(self.dataloader):
+        for batch_index, (
+            current_frame,
+            action,
+            next_frame
+        ) in enumerate(self.dataloader):
 
-            print(f"Batch {batch_index} loaded")
+            current_frame = current_frame.to(
+                self.device,
+                non_blocking=True
+            )
+
+            next_frame = next_frame.to(
+                self.device,
+                non_blocking=True
+            )
+
+            action = action.to(
+                self.device,
+                non_blocking=True
+            )
 
             hidden = self.model.init_hidden(
                 current_frame.size(0)
-            )
-
-            print("Hidden initialized")
+            ).to(self.device)
 
             self.optimizer.zero_grad()
-
-            print("Forward pass...")
 
             prediction, hidden = self.model(
                 current_frame,
@@ -56,25 +81,21 @@ class Trainer:
                 hidden
             )
 
-            print("Forward complete")
-
             loss = self.criterion(
                 prediction,
                 next_frame
             )
 
-            print("Loss computed")
-
             loss.backward()
-
-            print("Backward complete")
 
             self.optimizer.step()
 
-            print("Optimizer step complete")
-
             total_loss += loss.item()
 
-        print("Epoch complete")
+            if batch_index % 20 == 0:
+                print(
+                    f"Batch {batch_index}/{len(self.dataloader)} "
+                    f"Loss: {loss.item():.6f}"
+                )
 
         return total_loss / len(self.dataloader)
