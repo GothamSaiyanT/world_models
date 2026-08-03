@@ -43,59 +43,68 @@ class Trainer:
         )
 
     def train_epoch(self):
+        """
+        Each batch is now (frames, actions), where:
+            frames:  (batch, seq_len + 1, 1, H, W)
+            actions: (batch, seq_len)
+
+        The hidden state is initialised once per sequence and
+        carried forward across every step of that sequence, instead
+        of being reset to zero every batch. This is what actually
+        lets the GRU learn temporal structure (e.g. ball direction),
+        which was missing before and is a likely cause of the noisy
+        one-step predictions.
+        """
 
         self.model.train()
 
         total_loss = 0.0
 
-        for batch_index, (
-            current_frame,
-            action,
-            next_frame
-        ) in enumerate(self.dataloader):
+        for frames, actions in self.dataloader:
 
-            current_frame = current_frame.to(
+            frames = frames.to(
                 self.device,
                 non_blocking=True
             )
 
-            next_frame = next_frame.to(
+            actions = actions.to(
                 self.device,
                 non_blocking=True
             )
 
-            action = action.to(
-                self.device,
-                non_blocking=True
-            )
+            batch_size, seq_len = actions.shape
 
             hidden = self.model.init_hidden(
-                current_frame.size(0)
+                batch_size
             ).to(self.device)
 
             self.optimizer.zero_grad()
 
-            prediction, hidden = self.model(
-                current_frame,
-                action,
-                hidden
-            )
+            sequence_loss = 0.0
 
-            loss = self.criterion(
-                prediction,
-                next_frame
-            )
+            for t in range(seq_len):
 
-            loss.backward()
+                current_frame = frames[:, t]
+                next_frame = frames[:, t + 1]
+                action = actions[:, t]
+
+                prediction, hidden = self.model(
+                    current_frame,
+                    action,
+                    hidden
+                )
+
+                sequence_loss = sequence_loss + self.criterion(
+                    prediction,
+                    next_frame
+                )
+
+            sequence_loss = sequence_loss / seq_len
+
+            sequence_loss.backward()
 
             self.optimizer.step()
 
-            total_loss += loss.item()
-
-            if batch_index % 20 == 0:
-                print(
-                    f"Batch {batch_index}/{len(self.dataloader)} "
-                    f"Loss: {loss.item():.6f}"
-                )
+            total_loss += sequence_loss.item()
 
         return total_loss / len(self.dataloader)

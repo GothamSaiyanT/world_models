@@ -1,7 +1,7 @@
 import os
 
 from training.data_collector import DataCollector
-from training.dataset import WorldModelDataset
+from training.dataset import WorldModelSequenceDataset
 from training.trainer import Trainer
 
 from core.world_model import WorldModel
@@ -22,11 +22,12 @@ def main():
         )
 
     # -----------------------
-    # Load dataset
+    # Load dataset (sequences, not single transitions)
     # -----------------------
 
-    dataset = WorldModelDataset(
-        folder="data"
+    dataset = WorldModelSequenceDataset(
+        folder="data",
+        seq_len=16
     )
 
     # -----------------------
