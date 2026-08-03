@@ -3,14 +3,16 @@ import os
 from training.data_collector import DataCollector
 from training.dataset import WorldModelSequenceDataset
 from training.trainer import Trainer
-
 from core.world_model import WorldModel
 
 
 def main():
 
-    # Collect dataset once
+    os.makedirs("data", exist_ok=True)
+    os.makedirs("models", exist_ok=True)
 
+    # Keep the existing dataset.
+    # Data is only collected when frames.npy does not exist.
     if not os.path.exists("data/frames.npy"):
 
         collector = DataCollector()
@@ -19,16 +21,12 @@ def main():
             num_steps=10000
         )
 
-    # Load dataset (sequences, not single transitions)
-
-
     dataset = WorldModelSequenceDataset(
         folder="data",
         seq_len=16
     )
 
-    # Create model
-
+    # Create a completely new model with random parameters
     model = WorldModel(
         latent_size=128,
         hidden_size=128,
@@ -37,16 +35,14 @@ def main():
 
     checkpoint = "models/best_world_model.npz"
 
+    # Delete the previous model checkpoint
+    if os.path.exists(checkpoint):
+        os.remove(checkpoint)
+        print("Old checkpoint deleted.")
+
+    # Always start from the beginning
     start_epoch = 0
     best_loss = float("inf")
-
-    if os.path.exists(checkpoint):
-        start_epoch, best_loss = model.load(checkpoint)
-        print(f"Loaded checkpoint.")
-        print(f"Resuming from epoch {start_epoch}")
-        print(f"Best loss so far: {best_loss:.6f}")
-
-        # Trainer
 
     trainer = Trainer(
         model=model,
@@ -56,23 +52,17 @@ def main():
     )
 
     epochs = 70
-    print("DEBUG EPOCH VALUE:", epochs)
-    best_loss = float("inf")
 
-    os.makedirs(
-        "models",
-        exist_ok=True
-    )
+    print("Starting fresh training.")
+    print("Epoch target:", epochs)
 
-    # Training Loop
-
-    for epoch in range(start_epoch,epochs):
+    for epoch in range(start_epoch, epochs):
 
         loss = trainer.train_epoch()
 
         print(
-            f"Epoch {epoch+1}/{epochs}"
-            f" Loss: {loss:.6f}"
+            f"Epoch {epoch + 1}/{epochs} "
+            f"Loss: {loss:.6f}"
         )
 
         if loss < best_loss:
@@ -85,17 +75,11 @@ def main():
                 best_loss=best_loss
             )
 
-            print(
-                "Best model saved."
-            )
+            print("Best model saved.")
 
     print("\nTraining Complete!")
-
-    print(
-        f"Best Loss: {best_loss:.6f}"
-    )
+    print(f"Best Loss: {best_loss:.6f}")
 
 
 if __name__ == "__main__":
-
     main()
