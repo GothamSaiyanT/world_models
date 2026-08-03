@@ -47,11 +47,11 @@ def main():
     trainer = Trainer(
         model=model,
         dataset=dataset,
-        learning_rate=0.001,
+        learning_rate=0.0001,
         batch_size=32
     )
 
-    epochs = 250
+    epochs = 70
 
     print("Starting fresh training.")
     print("Epoch target:", epochs)
