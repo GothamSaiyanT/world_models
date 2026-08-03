@@ -3,55 +3,83 @@ import torch
 
 class RolloutGenerator:
     """
-    Drives the world model forward autoregressively: each predicted
-    frame is fed back in as the input for the next step, instead of
-    always being given the real frame (which is what the training
-    loop and evaluate.py currently do). This is what actually
-    exposes long-horizon prediction drift, and it is the same
-    generation loop the adaptive and fixed-interval correctors will
-    hook into later.
+    Generates future frames autoregressively.
+
+    Each predicted frame becomes the input for the following
+    prediction step.
     """
 
     def __init__(self, model):
-
         self.model = model
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def generate(self, initial_frame, actions):
-        """
-        initial_frame: (1, 1, H, W) tensor -> the real starting frame
-        actions: (T,) tensor of actions to imagine forward with
-
-        Returns: (T + 1, 1, H, W) tensor of frames, where index 0 is
-        the real initial frame and indices 1..T are imagined.
-        """
 
         self.model.eval()
 
-        device = initial_frame.device
+        model_device = self.model.parameters()[0].data.device
+
+        frame = initial_frame.to(
+            device=model_device,
+            dtype=torch.float32
+        )
+
+        # Accept either (1, H, W) or (1, 1, H, W)
+        if frame.ndim == 3:
+            frame = frame.unsqueeze(0)
+
+        if frame.ndim != 4:
+            raise ValueError(
+                "initial_frame must have shape "
+                "(1, 1, H, W) or (1, H, W)"
+            )
+
+        # Normalise uint8-style images into 0-1
+        if frame.max().item() > 1.0:
+            frame = frame / 255.0
+
+        actions = torch.as_tensor(
+            actions,
+            dtype=torch.long,
+            device=model_device
+        ).reshape(-1)
+
+        if actions.numel() == 0:
+            raise ValueError(
+                "The actions tensor is empty. "
+                "No future frames can be generated."
+            )
 
         hidden = self.model.init_hidden(
-            batch_size=1
-        ).to(device)
+            batch_size=1,
+            device=model_device
+        )
 
-        frame = initial_frame
-
-        predicted_frames = [initial_frame.squeeze(0)]
+        predicted_frames = [
+            frame[0].detach().cpu()
+        ]
 
         for action in actions:
 
             prediction, hidden = self.model(
                 frame,
-                action.view(1),
+                action.reshape(1),
                 hidden
             )
 
-            predicted_frames.append(
-                prediction.squeeze(0)
+            prediction = prediction.clamp(
+                min=0.0,
+                max=1.0
             )
 
-            # Feed the prediction back in as the next input --
-            # this is the autoregressive step that causes drift.
+            predicted_frames.append(
+                prediction[0].detach().cpu()
+            )
+
+            # Autoregressive feedback
             frame = prediction
 
-        return torch.stack(predicted_frames)
+        return torch.stack(
+            predicted_frames,
+            dim=0
+        )
