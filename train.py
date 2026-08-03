@@ -9,9 +9,7 @@ from core.world_model import WorldModel
 
 def main():
 
-    # -----------------------
     # Collect dataset once
-    # -----------------------
 
     if not os.path.exists("data/frames.npy"):
 
@@ -21,18 +19,15 @@ def main():
             num_steps=10000
         )
 
-    # -----------------------
     # Load dataset (sequences, not single transitions)
-    # -----------------------
+
 
     dataset = WorldModelSequenceDataset(
         folder="data",
         seq_len=16
     )
 
-    # -----------------------
     # Create model
-    # -----------------------
 
     model = WorldModel(
         latent_size=128,
@@ -40,9 +35,7 @@ def main():
         image_size=64
     )
 
-    # -----------------------
     # Trainer
-    # -----------------------
 
     trainer = Trainer(
         model=model,
@@ -51,7 +44,7 @@ def main():
         batch_size=32
     )
 
-    epochs = 30
+    epochs = 200
     print("DEBUG EPOCH VALUE:", epochs)
     best_loss = float("inf")
 
@@ -60,9 +53,7 @@ def main():
         exist_ok=True
     )
 
-    # -----------------------
     # Training Loop
-    # -----------------------
 
     for epoch in range(epochs):
 
