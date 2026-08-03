@@ -50,10 +50,14 @@ class WorldModel(Module):
         return prediction, hidden
 
     def init_hidden(self,
-                batch_size):
+                batch_size,
+                device = None,
+                dtype = torch.float32):
 
         return self.dynamics.init_hidden(
-            batch_size
+            batch_size = batch_size,
+            device=device,
+            dtype=dtype
         )
 
     def parameters(self):

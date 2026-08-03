@@ -24,11 +24,14 @@ class Dynamics(Module):
             hidden_size=hidden_size
         )
 
-    def init_hidden(self, batch_size):
+    def init_hidden(self, batch_size,device=None,
+        dtype=torch.float32):
 
         return torch.zeros(
             batch_size,
-            self.hidden_size
+            self.hidden_size,
+            device  = device,
+            dtype=dtype
         )
 
     def forward(self, latent,action , hidden):
