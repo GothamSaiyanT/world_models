@@ -47,7 +47,7 @@ def main():
     trainer = Trainer(
         model=model,
         dataset=dataset,
-        learning_rate=0.0001,
+        learning_rate=0.001,
         batch_size=32
     )
 
