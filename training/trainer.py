@@ -47,69 +47,97 @@ class Trainer:
         )
 
     def train_epoch(self):
-        """
-        Each batch is now (frames, actions), where:
-            frames:  (batch, seq_len + 1, 1, H, W)
-            actions: (batch, seq_len)
-
-        The hidden state is initialised once per sequence and
-        carried forward across every step of that sequence, instead
-        of being reset to zero every batch. This is what actually
-        lets the GRU learn temporal structure (e.g. ball direction),
-        which was missing before and is a likely cause of the noisy
-        one-step predictions.
-        """
 
         self.model.train()
 
         total_loss = 0.0
+        number_of_batches = 0
 
-        for frames, actions in self.dataloader:
+        total_batches = len(self.dataloader)
+
+        for batch_index, (frames, actions) in enumerate(
+            self.dataloader
+        ):
 
             frames = frames.to(
-                self.device,
+                device=self.device,
+                dtype=torch.float32,
                 non_blocking=True
             )
 
             actions = actions.to(
-                self.device,
+                device=self.device,
+                dtype=torch.long,
                 non_blocking=True
             )
 
-            batch_size, seq_len = actions.shape
+            batch_size, sequence_length = actions.shape
 
             hidden = self.model.init_hidden(
-                batch_size
+                batch_size=batch_size
             ).to(self.device)
 
             self.optimizer.zero_grad()
 
-            sequence_loss = 0.0
+            sequence_loss = torch.zeros(
+                (),
+                device=self.device,
+                dtype=torch.float32
+            )
 
-            for t in range(seq_len):
+            for timestep in range(sequence_length):
 
-                current_frame = frames[:, t]
-                next_frame = frames[:, t + 1]
-                action = actions[:, t]
+                current_frame = frames[:, timestep]
+                target_frame = frames[:, timestep + 1]
+                current_action = actions[:, timestep]
 
                 prediction, hidden = self.model(
                     current_frame,
-                    action,
+                    current_action,
                     hidden
                 )
-                step_loss = self.criterion(
-                        prediction=prediction,
-                        target=next_frame,
-                        current_frame=current_frame
-                    )
-                sequence_loss = (sequence_loss + step_loss)
 
-            sequence_loss = sequence_loss / seq_len
+                step_loss = self.criterion(
+                    prediction=prediction,
+                    target=target_frame,
+                    current_frame=current_frame
+                )
+
+                sequence_loss = (
+                    sequence_loss + step_loss
+                )
+
+            sequence_loss = (
+                sequence_loss / sequence_length
+            )
 
             sequence_loss.backward()
 
             self.optimizer.step()
 
             total_loss += sequence_loss.item()
+            number_of_batches += 1
 
-        return total_loss / len(self.dataloader)
+            # Show progress every 10 batches
+            if (
+                batch_index == 0
+                or (batch_index + 1) % 10 == 0
+                or batch_index + 1 == total_batches
+            ):
+
+                average_loss = (
+                    total_loss / number_of_batches
+                )
+
+                print(
+                    f"Batch {batch_index + 1}/{total_batches} "
+                    f"Average loss: {average_loss:.6f}",
+                    flush=True
+                )
+
+        if number_of_batches == 0:
+            raise RuntimeError(
+                "The DataLoader produced no batches."
+            )
+
+        return total_loss / number_of_batches
