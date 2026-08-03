@@ -185,9 +185,9 @@ def main(
     )
 
     render_comparison_video(
-        real_sequence=real_sequence,
-        predicted_sequence=predicted_sequence,
-        output_path=output_path,
+        real_sequence,
+        predicted_sequence,
+        output_path,
         fps=fps
     )
 
