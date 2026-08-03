@@ -9,7 +9,7 @@ from utils.video import render_comparison_video
 
 def main(
     start=0,
-    horizon=10,
+    horizon=100,
     fps=10
 ):
 
