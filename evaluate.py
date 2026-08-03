@@ -2,7 +2,7 @@ import torch
 
 from core.world_model import WorldModel
 from training.dataset import WorldModelDataset
-from core.loss import MSELoss
+from core.loss import AdaptiveMotionWeightedMSELoss
 
 
 def main():
