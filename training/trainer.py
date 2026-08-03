@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 
-from core.loss import MSELoss
+from core.loss import AdaptiveMotionWeightedMSELoss
 from training.optimizer import SGD
 
 
@@ -35,8 +35,12 @@ class Trainer:
             pin_memory=torch.cuda.is_available()
         )
 
-        self.criterion = MSELoss()
-
+        self.criterion = AdaptiveMotionWeightedMSELoss(
+        motion_weight=10.0,
+        motion_threshold=0.02,
+        base_loss_weight=1.0,
+        max_motion_fraction=0.35
+            )
         self.optimizer = SGD(
             model.parameters(),
             learning_rate
@@ -93,11 +97,12 @@ class Trainer:
                     action,
                     hidden
                 )
-
-                sequence_loss = sequence_loss + self.criterion(
-                    prediction,
-                    next_frame
-                )
+                step_loss = self.criterion(
+                        prediction=prediction,
+                        target=next_frame,
+                        current_frame=current_frame
+                    )
+                sequence_loss = (sequence_loss + step_loss)
 
             sequence_loss = sequence_loss / seq_len
 
