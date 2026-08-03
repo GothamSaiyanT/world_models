@@ -2,7 +2,7 @@ import os
 import torch
 
 from core.world_model import WorldModel
-from core.rollout_generator import RolloutGenerator
+from core.rolloutgenerator import RolloutGenerator
 from training.dataset import WorldModelDataset
 from utils.video import render_comparison_video
 
