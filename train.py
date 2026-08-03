@@ -35,7 +35,18 @@ def main():
         image_size=64
     )
 
-    # Trainer
+    checkpoint = "models/best_world_model.npz"
+
+    start_epoch = 0
+    best_loss = float("inf")
+
+    if os.path.exists(checkpoint):
+        start_epoch, best_loss = model.load(checkpoint)
+        print(f"Loaded checkpoint.")
+        print(f"Resuming from epoch {start_epoch}")
+        print(f"Best loss so far: {best_loss:.6f}")
+
+        # Trainer
 
     trainer = Trainer(
         model=model,
@@ -44,7 +55,7 @@ def main():
         batch_size=32
     )
 
-    epochs = 200
+    epochs = 500
     print("DEBUG EPOCH VALUE:", epochs)
     best_loss = float("inf")
 
@@ -55,7 +66,7 @@ def main():
 
     # Training Loop
 
-    for epoch in range(epochs):
+    for epoch in range(start_epoch,epochs):
 
         loss = trainer.train_epoch()
 
@@ -69,7 +80,9 @@ def main():
             best_loss = loss
 
             model.save(
-                "models/best_world_model.npz"
+                checkpoint,
+                epoch=epoch + 1,
+                best_loss=best_loss
             )
 
             print(

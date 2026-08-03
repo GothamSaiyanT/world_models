@@ -104,12 +104,20 @@ class WorldModel(Module):
                     )
 
                 )
-            
-    def save(self, filepath):
 
+        epoch = int(weights["epoch"]) if "epoch" in weights else 0
+        best_loss = float(weights["best_loss"]) if "best_loss" in weights else float("inf")
+
+        return epoch, best_loss
+            
+    def save(self, filepath,epoch = 0,best_loss=float("inf")):
+        state = self.state_dict()
+
+        state["epoch"] = epoch
+        state["best_loss"] = best_loss
         np.savez(
             filepath,
-            **self.state_dict()
+            **state
         )
     def to(self, device):
 
