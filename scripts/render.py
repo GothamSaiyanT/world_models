@@ -4,7 +4,7 @@ import torch
 
 from training.dataset import WorldModelDataset
 from utils.video import render_comparison_video
-from utils.rollout_generator import RolloutGenerator
+from core.rolloutgenerator import RolloutGenerator
 
 
 CHECKPOINTS = {
