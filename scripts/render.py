@@ -100,7 +100,7 @@ def main():
     )
 
     parser.add_argument("--start", type=int, default=0)
-    parser.add_argument("--horizon", type=int, default=200)
+    parser.add_argument("--horizon", type=int, default=500)
     parser.add_argument("--fps", type=int, default=10)
 
     args = parser.parse_args()
