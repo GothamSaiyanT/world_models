@@ -31,6 +31,14 @@ class SelfCorrectingTrainer:
     The model starts with the real first frame. At later steps, its previous
     prediction is fed back as the next input. A correction strategy may then
     replace the recurrent hidden state using the matching real observation.
+
+    New in this version: ``warmup_epochs``. ``train_epoch()`` now accepts an
+    optional ``epoch`` index; while ``epoch < warmup_epochs``, the corrector
+    is disabled for that epoch (see CorrectionStrategy.enabled), so the model
+    trains purely autoregressively before any hidden-state correction is
+    introduced. Calling ``train_epoch()`` with no ``epoch`` argument keeps
+    the old behaviour (corrector always enabled) for any code that hasn't
+    been updated to pass the epoch index yet.
     """
 
     def __init__(
@@ -45,6 +53,7 @@ class SelfCorrectingTrainer:
         num_workers: int | None = None,
         optimizer: str | None = None,
         device: str | torch.device | None = None,
+        warmup_epochs: int | None = None,
     ) -> None:
         """
         Create the trainer.
@@ -85,6 +94,16 @@ class SelfCorrectingTrainer:
             config=config,
             name="device",
             default=None,
+        )
+
+        # warmup_epochs isn't a field on the current TrainingConfig --
+        # falls back to the explicit kwarg, then a config attribute if
+        # you add one later, then a default of 5.
+        self.warmup_epochs = self._resolve_setting(
+            explicit=warmup_epochs,
+            config=config,
+            name="warmup_epochs",
+            default=5,
         )
 
         self.device = self._select_device(configured_device)
@@ -145,9 +164,19 @@ class SelfCorrectingTrainer:
             f"Unsupported optimizer '{name}'. Choose either 'sgd' or 'adam'."
         )
 
-    def train_epoch(self) -> EpochResult:
-        """Train for one epoch and return loss and correction statistics."""
+    def train_epoch(self, epoch: int | None = None) -> EpochResult:
+        """
+        Train for one epoch and return loss and correction statistics.
+
+        ``epoch`` should be the current epoch index (0-based) so the
+        warm-up period can be applied. If omitted, correction stays
+        enabled the whole time, matching the previous behaviour.
+        """
         self.model.train()
+
+        self.corrector.enabled = (
+            epoch is None or epoch >= self.warmup_epochs
+        )
         self.corrector.reset_log()
 
         total_loss = 0.0
@@ -253,9 +282,6 @@ class SelfCorrectingTrainer:
         if corrected_samples == 0:
             mean_correction_error = None
         else:
-            # Each logged error is the mean for that event. Weight it by the
-            # number of corrected samples so large and small batches contribute
-            # proportionally to the epoch statistic.
             weighted_error_sum = sum(
                 float(event[1]) * int(event[2])
                 for event in correction_log
