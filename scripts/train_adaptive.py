@@ -1,99 +1,52 @@
-import os
-import torch
+"""Entry point for Pipeline 1: adaptive self-correction.
 
-from training.dataset import WorldModelSequenceDataset
-from training.self_correcting_trainer import SelfCorrectingTrainer
+Run from the project root with:
+    python -m scripts.train_adaptive
+"""
 
-from core_nn.world_model import WorldModel
-from core_nn.drift import DriftDetector
-from core_nn.correction import AdaptiveCorrector
+from config import (
+    DataConfig,
+    DriftConfig,
+    ModelConfig,
+    TrainingConfig,
+)
+from pipelines import AdaptivePipeline
 
 
-def main():
+def main() -> None:
+    """Configure and train the adaptive self-correcting pipeline."""
 
-    # -----------------------
-    # Load dataset
-    # -----------------------
-    # Reuses the exact same frames.npy / actions.npy collected for
-    # the baseline -- all three pipelines must train on identical
-    # data for the comparison to be valid.
-
-    dataset = WorldModelSequenceDataset(
-        folder="data",
-        seq_len=16
+    pipeline = AdaptivePipeline(
+        data_config=DataConfig(
+            folder="data",
+            sequence_length=16,
+        ),
+        model_config=ModelConfig(
+            latent_size=128,
+            hidden_size=128,
+            image_size=64,
+            input_channels=1,
+            num_actions=4,
+            action_embedding_size=32,
+        ),
+        drift_config=DriftConfig(
+            metric="mse",
+            adaptive_threshold=0.01,
+            fixed_interval=10,
+        ),
+        training_config=TrainingConfig(
+            epochs=30,
+            learning_rate=0.001,
+            batch_size=32,
+            num_workers=2,
+            optimizer="sgd",
+            device=None,
+            checkpoint_folder="models",
+            history_folder="results",
+        ),
     )
 
-    # -----------------------
-    # Create model + correction components
-    # -----------------------
-
-    model = WorldModel(
-        latent_size=128,
-        hidden_size=128,
-        image_size=64
-    )
-
-    drift_detector = DriftDetector(
-        metric="mse",
-        threshold=0.01   # tune this: see note below
-    )
-
-    corrector = AdaptiveCorrector(
-        threshold=drift_detector.threshold
-    )
-
-    # -----------------------
-    # Trainer
-    # -----------------------
-
-    trainer = SelfCorrectingTrainer(
-        model=model,
-        dataset=dataset,
-        corrector=corrector,
-        drift_detector=drift_detector,
-        learning_rate=0.001,
-        batch_size=32
-    )
-
-    epochs = 30
-    best_loss = float("inf")
-
-    os.makedirs("models", exist_ok=True)
-
-    for epoch in range(epochs):
-
-        loss = trainer.train_epoch()
-
-        num_corrections = len(corrector.correction_log)
-
-        print(
-            f"Epoch {epoch + 1}/{epochs} "
-            f"Loss: {loss:.6f} "
-            f"Corrections this epoch: {num_corrections}"
-        )
-
-        # Warn if the threshold is clearly miscalibrated -- this
-        # mirrors the "too sensitive / too loose" extensions from
-        # the Deliverable 3 use case description.
-        if num_corrections == 0:
-            print(
-                "  Warning: no corrections fired this epoch -- "
-                "the threshold may be too loose."
-            )
-
-        if loss < best_loss:
-
-            best_loss = loss
-
-            torch.save(
-                model.state_dict(),
-                "models/best_adaptive_model.pt"
-            )
-
-            print("  Best adaptive model saved.")
-
-    print("\nTraining Complete!")
-    print(f"Best Loss: {best_loss:.6f}")
+    pipeline.run()
 
 
 if __name__ == "__main__":
