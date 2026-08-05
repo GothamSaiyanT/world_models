@@ -2,9 +2,10 @@ import argparse
 import os
 import torch
 
+from config import ModelConfig
 from training.dataset import WorldModelDataset
 from utils.video import render_comparison_video
-from core.rolloutgenerator import RolloutGenerator
+from utils.rollout_generator import RolloutGenerator
 
 
 CHECKPOINTS = {
@@ -45,13 +46,41 @@ def load_model(pipeline, checkpoint, device):
 
         from core_nn.world_model import WorldModel
 
-        model = WorldModel(
-            latent_size=128,
-            hidden_size=128,
-            image_size=64
-        )
+        # Matches ModelConfig's own defaults (latent_size=128,
+        # hidden_size=128, image_size=64, num_actions=4,
+        # action_embedding_size=32). If you trained with a
+        # non-default config, pass overrides here, e.g.
+        # ModelConfig(image_size=32).
+        config = ModelConfig()
 
-        state_dict = torch.load(checkpoint, map_location=device)
+        model = WorldModel(config)
+
+        checkpoint_data = torch.load(checkpoint, map_location=device)
+
+        # Handle both a bare state_dict (what a plain
+        # torch.save(model.state_dict(), ...) produces) and a
+        # wrapped checkpoint dict that also stores the config used
+        # for training (e.g. via serialise_configs()).
+        if isinstance(checkpoint_data, dict) and "model_state_dict" in checkpoint_data:
+
+            state_dict = checkpoint_data["model_state_dict"]
+
+            if "model_config" in checkpoint_data:
+
+                saved_config = ModelConfig(**checkpoint_data["model_config"])
+
+                if saved_config != config:
+                    print(
+                        "Warning: checkpoint's saved config differs from "
+                        "the default config -- rebuilding model with the "
+                        "checkpoint's actual config instead."
+                    )
+                    model = WorldModel(saved_config)
+
+        else:
+
+            state_dict = checkpoint_data
+
         model.load_state_dict(state_dict)
 
     model.to(device)
@@ -72,7 +101,7 @@ def main():
 
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--horizon", type=int, default=200)
-    parser.add_argument("--fps", type=int, default=100)
+    parser.add_argument("--fps", type=int, default=10)
 
     args = parser.parse_args()
 
