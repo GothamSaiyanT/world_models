@@ -51,7 +51,7 @@ def main():
         batch_size=32
     )
 
-    epochs = 30
+    epochs = 10
 
     print("Starting fresh training.")
     print("Epoch target:", epochs)
