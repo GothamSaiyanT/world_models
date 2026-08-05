@@ -6,7 +6,7 @@ from training.self_correcting_trainer import SelfCorrectingTrainer
 
 from core_nn.world_model import WorldModel
 from core_nn.drift import DriftDetector
-from core_nn.corrector import AdaptiveCorrector
+from core_nn.correction import AdaptiveCorrector
 
 
 def main():
