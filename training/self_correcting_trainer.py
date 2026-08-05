@@ -1,4 +1,4 @@
-"""Shared trainer for the adaptive and fixed-interval pipelines."""
+"""Shared trainer for adaptive and fixed-interval self-correcting pipelines."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import torch
-import torch.nn.functional as F
+from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -28,17 +28,12 @@ class SelfCorrectingTrainer:
     """
     Shared autoregressive trainer for both self-correcting pipelines.
 
-    The model starts with the real first frame. At later steps, its previous
-    prediction is fed back as the next input. A correction strategy may then
-    replace the recurrent hidden state using the matching real observation.
+    Reconstruction uses adaptive motion-weighted MSE so small moving objects
+    such as the Breakout ball and paddle are not overwhelmed by static
+    background pixels.
 
-    New in this version: ``warmup_epochs``. ``train_epoch()`` now accepts an
-    optional ``epoch`` index; while ``epoch < warmup_epochs``, the corrector
-    is disabled for that epoch (see CorrectionStrategy.enabled), so the model
-    trains purely autoregressively before any hidden-state correction is
-    introduced. Calling ``train_epoch()`` with no ``epoch`` argument keeps
-    the old behaviour (corrector always enabled) for any code that hasn't
-    been updated to pass the epoch index yet.
+    The motion mask is computed from two consecutive REAL frames:
+        abs(real_next - real_current) > motion_threshold
     """
 
     def __init__(
@@ -53,58 +48,59 @@ class SelfCorrectingTrainer:
         num_workers: int | None = None,
         optimizer: str | None = None,
         device: str | torch.device | None = None,
-        warmup_epochs: int | None = None,
+        motion_base_weight: float | None = None,
+        motion_weight: float | None = None,
+        motion_threshold: float | None = None,
+        motion_rho_max: float | None = None,
+        motion_epsilon: float | None = None,
     ) -> None:
-        """
-        Create the trainer.
-
-        ``config`` is the preferred OOP interface. The individual keyword
-        arguments are retained so older entry points remain compatible.
-        """
         self.model = model
         self.corrector = corrector
         self.drift_detector = drift_detector
 
         learning_rate = self._resolve_setting(
-            explicit=learning_rate,
-            config=config,
-            name="learning_rate",
-            default=0.001,
+            explicit=learning_rate, config=config,
+            name="learning_rate", default=0.001,
         )
         batch_size = self._resolve_setting(
-            explicit=batch_size,
-            config=config,
-            name="batch_size",
-            default=32,
+            explicit=batch_size, config=config,
+            name="batch_size", default=32,
         )
         num_workers = self._resolve_setting(
-            explicit=num_workers,
-            config=config,
-            name="num_workers",
-            default=2,
+            explicit=num_workers, config=config,
+            name="num_workers", default=2,
         )
         optimizer_name = self._resolve_setting(
-            explicit=optimizer,
-            config=config,
-            name="optimizer",
-            default="sgd",
+            explicit=optimizer, config=config,
+            name="optimizer", default="sgd",
         )
         configured_device = self._resolve_setting(
-            explicit=device,
-            config=config,
-            name="device",
-            default=None,
+            explicit=device, config=config,
+            name="device", default=None,
         )
 
-        # warmup_epochs isn't a field on the current TrainingConfig --
-        # falls back to the explicit kwarg, then a config attribute if
-        # you add one later, then a default of 5.
-        self.warmup_epochs = self._resolve_setting(
-            explicit=warmup_epochs,
-            config=config,
-            name="warmup_epochs",
-            default=5,
-        )
+        self.motion_base_weight = float(self._resolve_setting(
+            explicit=motion_base_weight, config=config,
+            name="motion_base_weight", default=1.0,
+        ))
+        self.motion_weight = float(self._resolve_setting(
+            explicit=motion_weight, config=config,
+            name="motion_weight", default=10.0,
+        ))
+        self.motion_threshold = float(self._resolve_setting(
+            explicit=motion_threshold, config=config,
+            name="motion_threshold", default=0.02,
+        ))
+        self.motion_rho_max = float(self._resolve_setting(
+            explicit=motion_rho_max, config=config,
+            name="motion_rho_max", default=0.35,
+        ))
+        self.motion_epsilon = float(self._resolve_setting(
+            explicit=motion_epsilon, config=config,
+            name="motion_epsilon", default=1e-8,
+        ))
+
+        self._validate_motion_loss_settings()
 
         self.device = self._select_device(configured_device)
         self.model.to(self.device)
@@ -124,7 +120,6 @@ class SelfCorrectingTrainer:
 
     @staticmethod
     def _resolve_setting(*, explicit, config, name: str, default):
-        """Prefer an explicit value, then a config attribute, then a default."""
         if explicit is not None:
             return explicit
         if config is not None and hasattr(config, name):
@@ -133,50 +128,95 @@ class SelfCorrectingTrainer:
                 return value
         return default
 
+    def _validate_motion_loss_settings(self) -> None:
+        if self.motion_base_weight < 0:
+            raise ValueError("motion_base_weight cannot be negative.")
+        if self.motion_weight < 0:
+            raise ValueError("motion_weight cannot be negative.")
+        if self.motion_threshold < 0:
+            raise ValueError("motion_threshold cannot be negative.")
+        if not 0 < self.motion_rho_max <= 1:
+            raise ValueError("motion_rho_max must be in (0, 1].")
+        if self.motion_epsilon <= 0:
+            raise ValueError("motion_epsilon must be greater than zero.")
+
     @staticmethod
     def _select_device(requested_device) -> torch.device:
         if requested_device is None:
             return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
         selected = torch.device(requested_device)
         if selected.type == "cuda" and not torch.cuda.is_available():
             raise RuntimeError(
-                "CUDA was requested in TrainingConfig, but CUDA is not available."
+                "CUDA was requested in TrainingConfig, but CUDA is unavailable."
             )
         return selected
 
     def _build_optimizer(self, name: str, learning_rate: float):
         normalised_name = name.strip().lower()
-
         if normalised_name == "sgd":
-            return torch.optim.SGD(
-                self.model.parameters(),
-                lr=learning_rate,
-            )
-
+            return torch.optim.SGD(self.model.parameters(), lr=learning_rate)
         if normalised_name == "adam":
-            return torch.optim.Adam(
-                self.model.parameters(),
-                lr=learning_rate,
-            )
-
+            return torch.optim.Adam(self.model.parameters(), lr=learning_rate)
         raise ValueError(
             f"Unsupported optimizer '{name}'. Choose either 'sgd' or 'adam'."
         )
 
-    def train_epoch(self, epoch: int | None = None) -> EpochResult:
-        """
-        Train for one epoch and return loss and correction statistics.
+    def _motion_weighted_loss(
+        self,
+        prediction: Tensor,
+        real_current_frame: Tensor,
+        real_next_frame: Tensor,
+    ) -> Tensor:
+        """Compute adaptive motion-weighted reconstruction loss."""
+        if prediction.shape != real_next_frame.shape:
+            raise ValueError(
+                "Prediction and target shapes must match: "
+                f"{tuple(prediction.shape)} vs {tuple(real_next_frame.shape)}."
+            )
+        if real_current_frame.shape != real_next_frame.shape:
+            raise ValueError(
+                "Consecutive real-frame shapes must match: "
+                f"{tuple(real_current_frame.shape)} vs "
+                f"{tuple(real_next_frame.shape)}."
+            )
 
-        ``epoch`` should be the current epoch index (0-based) so the
-        warm-up period can be applied. If omitted, correction stays
-        enabled the whole time, matching the previous behaviour.
-        """
-        self.model.train()
+        squared_error = (prediction - real_next_frame).pow(2)
 
-        self.corrector.enabled = (
-            epoch is None or epoch >= self.warmup_epochs
+        motion_mask = (
+            (real_next_frame - real_current_frame).abs()
+            > self.motion_threshold
+        ).to(dtype=squared_error.dtype)
+
+        reduction_dims = tuple(range(1, squared_error.ndim))
+
+        base_loss_per_sample = squared_error.mean(dim=reduction_dims)
+
+        motion_pixel_count = motion_mask.sum(dim=reduction_dims)
+        motion_error_sum = (
+            motion_mask * squared_error
+        ).sum(dim=reduction_dims)
+
+        motion_loss_per_sample = (
+            motion_error_sum / motion_pixel_count.clamp_min(1.0)
         )
+
+        motion_fraction = motion_mask.mean(dim=reduction_dims)
+        safe_fraction = motion_fraction.clamp_min(self.motion_epsilon)
+
+        motion_scale = torch.clamp(
+            self.motion_rho_max / safe_fraction,
+            max=1.0,
+        )
+
+        combined_per_sample = (
+            self.motion_base_weight * base_loss_per_sample
+            + self.motion_weight * motion_scale * motion_loss_per_sample
+        )
+
+        return combined_per_sample.mean()
+
+    def train_epoch(self) -> EpochResult:
+        self.model.train()
         self.corrector.reset_log()
 
         total_loss = 0.0
@@ -184,18 +224,20 @@ class SelfCorrectingTrainer:
 
         for frames, actions in self.dataloader:
             frames = frames.to(self.device, non_blocking=True)
-            actions = actions.to(self.device, non_blocking=True).long()
+            actions = actions.to(
+                self.device, non_blocking=True
+            ).long()
 
             if frames.ndim != 5:
                 raise ValueError(
-                    "Expected frames with shape (batch, sequence, channels, "
-                    f"height, width), but received {tuple(frames.shape)}."
+                    "Expected frames with shape "
+                    "(batch, sequence, channels, height, width), "
+                    f"received {tuple(frames.shape)}."
                 )
-
             if actions.ndim != 2:
                 raise ValueError(
                     "Expected actions with shape (batch, sequence_length), "
-                    f"but received {tuple(actions.shape)}."
+                    f"received {tuple(actions.shape)}."
                 )
 
             batch_size, sequence_length = actions.shape
@@ -203,8 +245,7 @@ class SelfCorrectingTrainer:
             if frames.shape[1] != sequence_length + 1:
                 raise ValueError(
                     "Each action sequence needs one more frame than actions: "
-                    f"received {frames.shape[1]} frames and "
-                    f"{sequence_length} actions."
+                    f"{frames.shape[1]} frames vs {sequence_length} actions."
                 )
 
             hidden = self.model.init_hidden(
@@ -214,7 +255,6 @@ class SelfCorrectingTrainer:
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            # The first model input is real. Subsequent inputs are predictions.
             current_frame = frames[:, 0]
             sequence_loss = torch.zeros((), device=self.device)
 
@@ -227,11 +267,15 @@ class SelfCorrectingTrainer:
                     hidden,
                 )
 
+                real_current_frame = frames[:, step]
                 real_next_frame = frames[:, step + 1]
-                sequence_loss = sequence_loss + F.mse_loss(
-                    prediction,
-                    real_next_frame,
+
+                step_loss = self._motion_weighted_loss(
+                    prediction=prediction,
+                    real_current_frame=real_current_frame,
+                    real_next_frame=real_next_frame,
                 )
+                sequence_loss = sequence_loss + step_loss
 
                 with torch.no_grad():
                     error = self.drift_detector.compute_error(
@@ -247,9 +291,6 @@ class SelfCorrectingTrainer:
                     step=step,
                 )
 
-                # Prevent gradients from passing through the predicted-image
-                # feedback path. The recurrent hidden state still carries the
-                # temporal computation graph until a hard correction occurs.
                 current_frame = prediction.detach()
 
             sequence_loss = sequence_loss / sequence_length
@@ -261,8 +302,8 @@ class SelfCorrectingTrainer:
 
         if batch_count == 0:
             raise RuntimeError(
-                "The training DataLoader produced no batches. Check that the "
-                "dataset contains enough frames for the configured sequence length."
+                "The DataLoader produced no batches. "
+                "Check the dataset and sequence length."
             )
 
         return self._build_epoch_result(
@@ -270,14 +311,10 @@ class SelfCorrectingTrainer:
         )
 
     def _build_epoch_result(self, average_loss: float) -> EpochResult:
-        """Aggregate the corrector log into an epoch-level result."""
         correction_log = self.corrector.correction_log
         correction_events = len(correction_log)
 
-        corrected_samples = sum(
-            int(event[2])
-            for event in correction_log
-        )
+        corrected_samples = sum(int(event[2]) for event in correction_log)
 
         if corrected_samples == 0:
             mean_correction_error = None
