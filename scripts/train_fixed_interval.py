@@ -28,7 +28,7 @@ def main() -> None:
             fixed_interval=10,
         ),
         training_config=TrainingConfig(
-            epochs=30,
+            epochs=70,
             learning_rate=0.001,
             batch_size=32,
             num_workers=2,
