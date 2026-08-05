@@ -1,126 +1,159 @@
+"""Correction strategies shared by the adaptive and fixed-interval pipelines."""
+
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
 from typing import Callable
 
 import torch
+from torch import Tensor
 
-EncodeFunction = Callable[[torch.Tensor], torch.Tensor]
 
-
-@dataclass(frozen=True)
-class CorrectionEvent:
-    step: int
-    mean_error: float
-    samples_corrected: int
-
-    def to_dict(self) -> dict[str, int | float]:
-        return asdict(self)
+# Each event stores:
+# (rollout step, mean error at correction, number of corrected samples)
+CorrectionEvent = tuple[int, float, int]
 
 
 class CorrectionStrategy(ABC):
-    """Strategy interface used by all self-correcting pipelines."""
+    """
+    Base strategy for correcting the recurrent hidden state.
+
+    Subclasses decide *when* correction happens. The trainer depends only on
+    this common interface, so both strategies must provide ``maybe_correct()``,
+    ``correction_log``, and ``reset_log()``.
+    """
 
     def __init__(self) -> None:
-        self._events: list[CorrectionEvent] = []
-
-    @property
-    def events(self) -> tuple[CorrectionEvent, ...]:
-        return tuple(self._events)
-
-    def reset(self) -> None:
-        self._events.clear()
-
-    def _record(self, step: int, error: torch.Tensor, sample_count: int) -> None:
-        self._events.append(
-            CorrectionEvent(
-                step=step,
-                mean_error=float(error.mean().item()),
-                samples_corrected=sample_count,
-            )
-        )
-
-    @staticmethod
-    def _encode_anchor(
-        real_frame: torch.Tensor,
-        encode_fn: EncodeFunction,
-        hidden: torch.Tensor,
-    ) -> torch.Tensor:
-        # The correction anchor is deliberately detached. Correction is an
-        # intervention, not another backpropagation path through the encoder.
-        with torch.no_grad():
-            corrected_hidden = encode_fn(real_frame)
-
-        if corrected_hidden.shape != hidden.shape:
-            raise ValueError(
-                "Encoded correction anchor must match hidden-state shape; "
-                f"received {tuple(corrected_hidden.shape)} and {tuple(hidden.shape)}"
-            )
-        return corrected_hidden
+        self.correction_log: list[CorrectionEvent] = []
 
     @abstractmethod
     def maybe_correct(
         self,
-        hidden: torch.Tensor,
-        real_frame: torch.Tensor,
-        encode_fn: EncodeFunction,
-        error: torch.Tensor,
+        hidden: Tensor,
+        real_frame: Tensor,
+        encode_fn: Callable[[Tensor], Tensor],
+        error: Tensor,
         step: int,
-    ) -> torch.Tensor:
-        """Return either the original or corrected recurrent hidden state."""
+    ) -> Tensor:
+        """Return either the original hidden state or a corrected one."""
         raise NotImplementedError
 
+    def reset_log(self) -> None:
+        """Clear correction events before a new training epoch."""
+        self.correction_log.clear()
 
-class FixedIntervalCorrector(CorrectionStrategy):
-    """Pipeline 2: correct the whole batch after every N rollout steps."""
-
-    def __init__(self, interval: int = 10) -> None:
-        super().__init__()
-        if interval < 1:
-            raise ValueError("interval must be at least 1")
-        self.interval = interval
-
-    def maybe_correct(
+    def _encode_real_frame(
         self,
-        hidden: torch.Tensor,
-        real_frame: torch.Tensor,
-        encode_fn: EncodeFunction,
-        error: torch.Tensor,
-        step: int,
-    ) -> torch.Tensor:
-        if (step + 1) % self.interval != 0:
-            return hidden
+        real_frame: Tensor,
+        encode_fn: Callable[[Tensor], Tensor],
+    ) -> Tensor:
+        """Encode a real observation without building an autograd graph."""
+        with torch.no_grad():
+            return encode_fn(real_frame)
 
-        corrected_hidden = self._encode_anchor(real_frame, encode_fn, hidden)
-        self._record(step, error, hidden.shape[0])
-        return corrected_hidden
+    def _record_event(
+        self,
+        step: int,
+        mean_error: float,
+        corrected_samples: int,
+    ) -> None:
+        """Record one correction event in the format expected by the trainer."""
+        self.correction_log.append(
+            (int(step), float(mean_error), int(corrected_samples))
+        )
 
 
 class AdaptiveCorrector(CorrectionStrategy):
-    """Pipeline 3: correct only samples whose measured drift exceeds a threshold."""
+    """Correct samples whose prediction error exceeds a threshold."""
 
     def __init__(self, threshold: float = 0.01) -> None:
         super().__init__()
+
         if threshold < 0:
-            raise ValueError("threshold cannot be negative")
-        self.threshold = threshold
+            raise ValueError("Adaptive correction threshold cannot be negative.")
+
+        self.threshold = float(threshold)
 
     def maybe_correct(
         self,
-        hidden: torch.Tensor,
-        real_frame: torch.Tensor,
-        encode_fn: EncodeFunction,
-        error: torch.Tensor,
+        hidden: Tensor,
+        real_frame: Tensor,
+        encode_fn: Callable[[Tensor], Tensor],
+        error: Tensor,
         step: int,
-    ) -> torch.Tensor:
-        if error.ndim != 1 or error.shape[0] != hidden.shape[0]:
-            raise ValueError("error must contain one value per batch sample")
+    ) -> Tensor:
+        if error.ndim != 1:
+            raise ValueError(
+                "AdaptiveCorrector expects one error value per sample, "
+                f"but received shape {tuple(error.shape)}."
+            )
 
         mask = error > self.threshold
-        if not bool(mask.any().item()):
+
+        if not bool(mask.any()):
             return hidden
 
-        corrected_hidden = self._encode_anchor(real_frame, encode_fn, hidden)
-        selected_error = error[mask]
-        self._record(step, selected_error, int(mask.sum().item()))
+        corrected_latent = self._encode_real_frame(real_frame, encode_fn)
 
-        return torch.where(mask.unsqueeze(1), corrected_hidden, hidden)
+        if corrected_latent.shape != hidden.shape:
+            raise ValueError(
+                "The encoded real frame and hidden state must have the same "
+                "shape for hard correction: "
+                f"encoded={tuple(corrected_latent.shape)}, "
+                f"hidden={tuple(hidden.shape)}."
+            )
+
+        corrected_hidden = torch.where(
+            mask.unsqueeze(1),
+            corrected_latent,
+            hidden,
+        )
+
+        corrected_samples = int(mask.sum().item())
+        mean_error = float(error[mask].mean().item())
+        self._record_event(step, mean_error, corrected_samples)
+
+        return corrected_hidden
+
+
+class FixedIntervalCorrector(CorrectionStrategy):
+    """Correct the full batch after every configured number of rollout steps."""
+
+    def __init__(self, interval: int = 10) -> None:
+        super().__init__()
+
+        if interval <= 0:
+            raise ValueError("Fixed correction interval must be greater than zero.")
+
+        self.interval = int(interval)
+
+    def maybe_correct(
+        self,
+        hidden: Tensor,
+        real_frame: Tensor,
+        encode_fn: Callable[[Tensor], Tensor],
+        error: Tensor,
+        step: int,
+    ) -> Tensor:
+        if (step + 1) % self.interval != 0:
+            return hidden
+
+        corrected_hidden = self._encode_real_frame(real_frame, encode_fn)
+
+        if corrected_hidden.shape != hidden.shape:
+            raise ValueError(
+                "The encoded real frame and hidden state must have the same "
+                "shape for hard correction: "
+                f"encoded={tuple(corrected_hidden.shape)}, "
+                f"hidden={tuple(hidden.shape)}."
+            )
+
+        batch_size = int(hidden.shape[0])
+        mean_error = float(error.mean().item())
+        self._record_event(step, mean_error, batch_size)
+
+        return corrected_hidden
+
+
+# Backward-compatible alias for older files that imported ``Corrector``.
+Corrector = CorrectionStrategy
