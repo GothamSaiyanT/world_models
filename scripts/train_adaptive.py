@@ -42,7 +42,7 @@ def main() -> None:
             # warm-up, but is low enough to catch real drift once
             # the model predicts reasonably well. Re-tune once you
             # see your own post-warmup error distribution.
-            adaptive_threshold=0.08,
+            adaptive_threshold=0.05,
             fixed_interval=10,
         ),
         training_config=TrainingConfig(
