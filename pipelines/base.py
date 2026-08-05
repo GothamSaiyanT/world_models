@@ -6,17 +6,17 @@ from typing import Any
 import torch
 from torch.utils.data import Dataset
 
-from world_model_oop.config import (
+from config import (
     DataConfig,
     DriftConfig,
     ModelConfig,
     TrainingConfig,
     serialise_configs,
 )
-from world_model_oop.core.correction import CorrectionStrategy
-from world_model_oop.core.drift import DriftDetector
-from world_model_oop.core.world_model import WorldModel
-from world_model_oop.training.trainer import EpochResult, SelfCorrectingTrainer
+from core_nn.correction import CorrectionStrategy
+from core_nn.drift import DriftDetector
+from core_nn.world_model import WorldModel
+from training.self_correcting_trainer import EpochResult, SelfCorrectingTrainer
 
 
 class SelfCorrectingPipeline(ABC):

@@ -1,6 +1,6 @@
-from world_model_oop.core.correction import AdaptiveCorrector, CorrectionStrategy
-from world_model_oop.pipelines.base import SelfCorrectingPipeline
-from world_model_oop.training.trainer import EpochResult
+from core_nn.correction import AdaptiveCorrector, CorrectionStrategy
+from pipelines.base import SelfCorrectingPipeline
+from training.self_correcting_trainer import EpochResult
 
 
 class AdaptivePipeline(SelfCorrectingPipeline):

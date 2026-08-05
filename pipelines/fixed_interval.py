@@ -1,9 +1,9 @@
-from world_model_oop.core.correction import (
+from core.correction import (
     CorrectionStrategy,
     FixedIntervalCorrector,
 )
-from world_model_oop.pipelines.base import SelfCorrectingPipeline
-from world_model_oop.training.trainer import EpochResult
+from pipelines.base import SelfCorrectingPipeline
+from training.self_correcting_trainer import EpochResult
 
 
 class FixedIntervalPipeline(SelfCorrectingPipeline):
