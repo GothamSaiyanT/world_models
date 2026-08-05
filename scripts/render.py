@@ -5,7 +5,7 @@ import torch
 from config import ModelConfig
 from training.dataset import WorldModelDataset
 from utils.video import render_comparison_video
-from core.rolloutgenerator import RolloutGenerator
+from utils.rolloutgenerator import RolloutGenerator
 
 
 CHECKPOINTS = {
