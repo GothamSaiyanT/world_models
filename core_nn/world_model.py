@@ -1,8 +1,8 @@
 import torch
 from torch import nn
 
-from world_model_oop.config import ModelConfig
-from world_model_oop.core.blocks import Decoder, Encoder
+from config import ModelConfig
+from core_nn.blocks import Decoder, Encoder
 
 
 class WorldModel(nn.Module):
