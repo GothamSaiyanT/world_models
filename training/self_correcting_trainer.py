@@ -1,131 +1,270 @@
+"""Shared trainer for the adaptive and fixed-interval pipelines."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from typing import Any
+
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
+
+
+@dataclass(frozen=True)
+class EpochResult:
+    """Summary of one completed training epoch."""
+
+    average_loss: float
+    correction_events: int
+    corrected_samples: int
+    mean_correction_error: float | None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serialisable representation of the result."""
+        return asdict(self)
 
 
 class SelfCorrectingTrainer:
     """
-    Same overall shape as training/trainer.py (unrolls over
-    sequences, carries hidden state across steps), but with two
-    differences that make it "self-correcting":
+    Shared autoregressive trainer for both self-correcting pipelines.
 
-    1. The input fed forward at each step is the model's OWN
-       prediction from the previous step, not the real frame. This
-       is what actually exposes the model to compounding drift
-       during training, rather than only at evaluation time.
-
-    2. After each step, the given Corrector is given the chance to
-       intervene on the hidden state using the real frame as an
-       anchor, based on the error measured by DriftDetector.
-
-    The same class is used for both the adaptive and fixed-interval
-    pipelines -- they differ only in which Corrector instance is
-    passed in.
+    The model starts with the real first frame. At later steps, its previous
+    prediction is fed back as the next input. A correction strategy may then
+    replace the recurrent hidden state using the matching real observation.
     """
 
     def __init__(
         self,
         model,
-        dataset,
+        dataset: Dataset,
         corrector,
         drift_detector,
-        learning_rate=0.001,
-        batch_size=32
-    ):
+        config=None,
+        learning_rate: float | None = None,
+        batch_size: int | None = None,
+        num_workers: int | None = None,
+        optimizer: str | None = None,
+        device: str | torch.device | None = None,
+    ) -> None:
+        """
+        Create the trainer.
 
+        ``config`` is the preferred OOP interface. The individual keyword
+        arguments are retained so older entry points remain compatible.
+        """
         self.model = model
         self.corrector = corrector
         self.drift_detector = drift_detector
 
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
+        learning_rate = self._resolve_setting(
+            explicit=learning_rate,
+            config=config,
+            name="learning_rate",
+            default=0.001,
+        )
+        batch_size = self._resolve_setting(
+            explicit=batch_size,
+            config=config,
+            name="batch_size",
+            default=32,
+        )
+        num_workers = self._resolve_setting(
+            explicit=num_workers,
+            config=config,
+            name="num_workers",
+            default=2,
+        )
+        optimizer_name = self._resolve_setting(
+            explicit=optimizer,
+            config=config,
+            name="optimizer",
+            default="sgd",
+        )
+        configured_device = self._resolve_setting(
+            explicit=device,
+            config=config,
+            name="device",
+            default=None,
         )
 
-        print(f"Training on: {self.device}")
-
+        self.device = self._select_device(configured_device)
         self.model.to(self.device)
 
         self.dataloader = DataLoader(
             dataset,
-            batch_size=batch_size,
+            batch_size=int(batch_size),
             shuffle=True,
-            num_workers=2,
-            pin_memory=torch.cuda.is_available()
+            num_workers=int(num_workers),
+            pin_memory=self.device.type == "cuda",
         )
 
-        self.optimizer = torch.optim.SGD(
-            self.model.parameters(),
-            lr=learning_rate
+        self.optimizer = self._build_optimizer(
+            name=str(optimizer_name),
+            learning_rate=float(learning_rate),
         )
 
-    def train_epoch(self):
+    @staticmethod
+    def _resolve_setting(*, explicit, config, name: str, default):
+        """Prefer an explicit value, then a config attribute, then a default."""
+        if explicit is not None:
+            return explicit
+        if config is not None and hasattr(config, name):
+            value = getattr(config, name)
+            if value is not None:
+                return value
+        return default
 
+    @staticmethod
+    def _select_device(requested_device) -> torch.device:
+        if requested_device is None:
+            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        selected = torch.device(requested_device)
+        if selected.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA was requested in TrainingConfig, but CUDA is not available."
+            )
+        return selected
+
+    def _build_optimizer(self, name: str, learning_rate: float):
+        normalised_name = name.strip().lower()
+
+        if normalised_name == "sgd":
+            return torch.optim.SGD(
+                self.model.parameters(),
+                lr=learning_rate,
+            )
+
+        if normalised_name == "adam":
+            return torch.optim.Adam(
+                self.model.parameters(),
+                lr=learning_rate,
+            )
+
+        raise ValueError(
+            f"Unsupported optimizer '{name}'. Choose either 'sgd' or 'adam'."
+        )
+
+    def train_epoch(self) -> EpochResult:
+        """Train for one epoch and return loss and correction statistics."""
         self.model.train()
-
         self.corrector.reset_log()
 
         total_loss = 0.0
+        batch_count = 0
 
         for frames, actions in self.dataloader:
-
             frames = frames.to(self.device, non_blocking=True)
-            actions = actions.to(self.device, non_blocking=True)
+            actions = actions.to(self.device, non_blocking=True).long()
 
-            batch_size, seq_len = actions.shape
+            if frames.ndim != 5:
+                raise ValueError(
+                    "Expected frames with shape (batch, sequence, channels, "
+                    f"height, width), but received {tuple(frames.shape)}."
+                )
 
-            hidden = self.model.init_hidden(batch_size, self.device)
+            if actions.ndim != 2:
+                raise ValueError(
+                    "Expected actions with shape (batch, sequence_length), "
+                    f"but received {tuple(actions.shape)}."
+                )
 
-            self.optimizer.zero_grad()
+            batch_size, sequence_length = actions.shape
 
-            # First input is the real starting frame; after that,
-            # the model feeds its own predictions forward.
-            frame = frames[:, 0]
+            if frames.shape[1] != sequence_length + 1:
+                raise ValueError(
+                    "Each action sequence needs one more frame than actions: "
+                    f"received {frames.shape[1]} frames and "
+                    f"{sequence_length} actions."
+                )
 
-            sequence_loss = 0.0
+            hidden = self.model.init_hidden(
+                batch_size=batch_size,
+                device=self.device,
+            )
 
-            for t in range(seq_len):
+            self.optimizer.zero_grad(set_to_none=True)
 
-                latent = self.model.encode(frame)
+            # The first model input is real. Subsequent inputs are predictions.
+            current_frame = frames[:, 0]
+            sequence_loss = torch.zeros((), device=self.device)
+
+            for step in range(sequence_length):
+                latent = self.model.encode(current_frame)
 
                 prediction, hidden = self.model.step(
                     latent,
-                    actions[:, t],
-                    hidden
+                    actions[:, step],
+                    hidden,
                 )
 
-                real_next = frames[:, t + 1]
-
+                real_next_frame = frames[:, step + 1]
                 sequence_loss = sequence_loss + F.mse_loss(
                     prediction,
-                    real_next
+                    real_next_frame,
                 )
 
                 with torch.no_grad():
                     error = self.drift_detector.compute_error(
                         prediction,
-                        real_next
+                        real_next_frame,
                     )
 
                 hidden = self.corrector.maybe_correct(
-                    hidden,
-                    real_next,
-                    self.model.encode,
-                    error,
-                    t
+                    hidden=hidden,
+                    real_frame=real_next_frame,
+                    encode_fn=self.model.encode,
+                    error=error,
+                    step=step,
                 )
 
-                # Feed the prediction forward autoregressively.
-                # Detached so gradients only flow through the
-                # current step, not back through the whole chain
-                # of predictions (keeps training stable/cheap).
-                frame = prediction.detach()
+                # Prevent gradients from passing through the predicted-image
+                # feedback path. The recurrent hidden state still carries the
+                # temporal computation graph until a hard correction occurs.
+                current_frame = prediction.detach()
 
-            sequence_loss = sequence_loss / seq_len
-
+            sequence_loss = sequence_loss / sequence_length
             sequence_loss.backward()
-
             self.optimizer.step()
 
-            total_loss += sequence_loss.item()
+            total_loss += float(sequence_loss.detach().item())
+            batch_count += 1
 
-        return total_loss / len(self.dataloader)
+        if batch_count == 0:
+            raise RuntimeError(
+                "The training DataLoader produced no batches. Check that the "
+                "dataset contains enough frames for the configured sequence length."
+            )
+
+        return self._build_epoch_result(
+            average_loss=total_loss / batch_count,
+        )
+
+    def _build_epoch_result(self, average_loss: float) -> EpochResult:
+        """Aggregate the corrector log into an epoch-level result."""
+        correction_log = self.corrector.correction_log
+        correction_events = len(correction_log)
+
+        corrected_samples = sum(
+            int(event[2])
+            for event in correction_log
+        )
+
+        if corrected_samples == 0:
+            mean_correction_error = None
+        else:
+            # Each logged error is the mean for that event. Weight it by the
+            # number of corrected samples so large and small batches contribute
+            # proportionally to the epoch statistic.
+            weighted_error_sum = sum(
+                float(event[1]) * int(event[2])
+                for event in correction_log
+            )
+            mean_correction_error = weighted_error_sum / corrected_samples
+
+        return EpochResult(
+            average_loss=float(average_loss),
+            correction_events=correction_events,
+            corrected_samples=corrected_samples,
+            mean_correction_error=mean_correction_error,
+        )
