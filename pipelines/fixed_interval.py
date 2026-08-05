@@ -1,4 +1,4 @@
-from core.correction import (
+from core_nn.correction import (
     CorrectionStrategy,
     FixedIntervalCorrector,
 )
