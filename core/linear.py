@@ -10,10 +10,6 @@ class Linear(Module):
         self.in_features = in_features
         self.out_features = out_features
 
-        #save the input for backward pass
-
-        #elf.input =None
-
         #He - Inintialization
 
         std = (2.0 / in_features) ** 0.5

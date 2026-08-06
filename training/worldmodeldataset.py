@@ -44,21 +44,7 @@ class WorldModelDataset(Dataset):
 
 
 class WorldModelSequenceDataset(Dataset):
-    """
-    Returns contiguous sequences of (seq_len + 1) frames and seq_len
-    actions, instead of single (frame_t, action_t, frame_t+1) triples.
-
-    This is the key fix for the noisy predictions: the previous
-    dataset shuffled individual transitions and reset the hidden
-    state to zero every batch, so the recurrent DynamicsModel never
-    learned anything sequential. Training on contiguous sequences
-    and carrying `hidden` forward within each sequence (see Trainer)
-    lets the GRU actually learn temporal dependencies such as ball
-    direction/velocity in Breakout.
-
-    Only sequence *start indices* are shuffled by the DataLoader;
-    the frames within a sequence stay in their original order.
-    """
+ 
 
     def __init__(self, folder="data", seq_len=16):
 
@@ -79,7 +65,7 @@ class WorldModelSequenceDataset(Dataset):
 
     def __getitem__(self, index):
 
-        # (seq_len + 1, 1, H, W) -- includes the frame *before* the
+        # (seq_len + 1, 1, H, W) -> includes the frame *before* the
         # first action and the frame *after* the last action
         frames = self.frames[
             index: index + self.seq_len + 1

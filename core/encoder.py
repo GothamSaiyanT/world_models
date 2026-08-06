@@ -18,9 +18,7 @@ class Encoder(Module):
     ):
         super().__init__()
 
-        # -----------------------------
         # Convolution Layers
-        # -----------------------------
 
         self.conv1 = Conv2D(
             in_channels=input_channels,
@@ -52,9 +50,7 @@ class Encoder(Module):
 
         self.relu3 = ReLU()
 
-        # -----------------------------
         # Flatten Layer
-        # -----------------------------
 
         self.flatten = Flatten()
 
@@ -66,9 +62,7 @@ class Encoder(Module):
             input_width
         )
 
-        # -----------------------------
         # Latent Projection
-        # -----------------------------
 
         self.linear = Linear(
             in_features=flatten_size,

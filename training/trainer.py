@@ -9,11 +9,6 @@ def clip_gradient_norm(
     parameters,
     max_norm=1.0
 ):
-    """
-    Clips the combined gradient norm of all parameters.
-
-    This implementation does not use torch.nn utilities.
-    """
 
     gradients = []
 

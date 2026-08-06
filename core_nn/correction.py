@@ -15,23 +15,6 @@ CorrectionEvent = tuple[int, float, int]
 
 
 class CorrectionStrategy(ABC):
-    """
-    Base strategy for correcting the recurrent hidden state.
-
-    Subclasses decide *when* correction happens. The trainer depends only on
-    this common interface, so both strategies must provide ``maybe_correct()``,
-    ``correction_log``, and ``reset_log()``.
-
-    ``enabled`` (new): when False, ``maybe_correct()`` is a no-op regardless
-    of what the subclass would otherwise decide. This is used for a training
-    warm-up period -- a freshly-initialised model has high per-step error
-    almost everywhere, so a threshold tuned for a *trained* model fires on
-    nearly every sample from epoch 1, severing the GRU's gradient chain at
-    every step and preventing it from ever learning multi-step dynamics.
-    Disabling correction for the first few epochs lets the model first learn
-    reasonable free-running predictions, so "drift" means something once
-    correction is switched on.
-    """
 
     def __init__(self) -> None:
         self.correction_log: list[CorrectionEvent] = []

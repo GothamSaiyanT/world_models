@@ -31,20 +31,6 @@ class EpochResult:
 
 
 class SelfCorrectingTrainer:
-    """
-    Shared autoregressive trainer for adaptive and fixed-interval pipelines.
-
-    The loss is object-aware:
-      1. Every pixel receives the normal reconstruction weight.
-      2. Pixels that changed between consecutive real frames receive extra
-         motion weight.
-      3. Non-background target pixels receive a smaller foreground weight.
-      4. The motion mask is dilated so tiny objects such as an Atari ball are
-         not lost after resizing.
-
-    Drift correction still uses DriftDetector's whole-frame error. The
-    reconstruction loss and correction threshold therefore remain separate.
-    """
 
     def __init__(
         self,
