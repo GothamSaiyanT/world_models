@@ -16,6 +16,9 @@ class WorldModel(Module):
         super().__init__()
 
         self.encoder = Encoder(
+            input_channels=1,
+            input_height=image_size,
+            input_width=image_size,
             latent_size=latent_size
         )
 

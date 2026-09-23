@@ -89,7 +89,7 @@ class SelfCorrectingPipeline(ABC):
 
         best_loss = float("inf")
         for epoch in range(1, self.training_config.epochs + 1):
-            result = self.trainer.train_epoch()
+            result = self.trainer.train_epoch(epoch=epoch - 1)
             epoch_record = {"epoch": epoch, **result.to_dict()}
             self.history.append(epoch_record)
             self.report_epoch(epoch, result)

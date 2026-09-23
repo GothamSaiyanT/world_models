@@ -10,3 +10,10 @@ data/
 .ipynb_checkpoints/
 
 .DS_Store
+
+# High-resolution retraining artifacts
+data_128/
+models_128/
+results_128/
+outputs_128/
+smoke_data_128/
