@@ -54,3 +54,8 @@ python -m scripts.render_v3 --pipeline adaptive --start 0 --horizon 100
 ```
 
 Fixed/Adaptive are **observation-corrected** rollouts. Their correction mechanism uses ground-truth observations during evaluation by design; do not describe them as fully open-loop forecasts.
+
+
+## TPU / GPU / CPU support
+
+V3 training now accepts `--device auto|tpu|cuda|cpu`. `auto` prefers a normal CUDA GPU, otherwise checks for a TPU through PyTorch/XLA, and finally falls back to CPU. For Kaggle TPU commands see `V3_TPU_GPU_QUICKSTART.md`.

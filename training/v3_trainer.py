@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from training.v3_loss import motion_aware_loss, per_sample_drift_error
+from v3.device import resolve_accelerator
 
 
 class V3Trainer:
@@ -25,10 +26,12 @@ class V3Trainer:
         learning_rate: float = 3e-4,
         fixed_interval: int = 8,
         warmup_epochs: int = 3,
-        device: str | None = None,
+        device: str = "auto",
+        num_workers: int = 2,
     ):
         if pipeline not in {"baseline", "fixed_interval", "adaptive"}:
             raise ValueError("pipeline must be baseline, fixed_interval, or adaptive")
+
         self.model = model
         self.pipeline = pipeline
         self.output_folder = Path(output_folder)
@@ -36,33 +39,47 @@ class V3Trainer:
         self.output_folder.mkdir(parents=True, exist_ok=True)
         self.results_folder.mkdir(parents=True, exist_ok=True)
 
-        self.device = torch.device(
-            device or ("cuda" if torch.cuda.is_available() else "cpu")
-        )
+        self.runtime = resolve_accelerator(device)
+        self.device = self.runtime.device
         self.model.to(self.device)
+
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=learning_rate, weight_decay=1e-5
         )
+
+        # XLA benefits greatly from static batch shapes. Dropping only the final
+        # incomplete batch avoids recompiling the 32-step graph for a new shape.
+        drop_last = self.runtime.is_xla
         self.train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=2,
-            pin_memory=self.device.type == "cuda",
-            drop_last=False,
+            num_workers=num_workers,
+            pin_memory=self.runtime.kind == "cuda",
+            drop_last=drop_last,
         )
         self.val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
             shuffle=False,
-            num_workers=2,
-            pin_memory=self.device.type == "cuda",
-            drop_last=False,
+            num_workers=num_workers,
+            pin_memory=self.runtime.kind == "cuda",
+            drop_last=drop_last,
         )
+
         self.fixed_interval = int(fixed_interval)
         self.warmup_epochs = int(warmup_epochs)
         self.adaptive_threshold: float | None = None
         self.history = []
+
+        # We only need a representative drift sample for the P90 threshold.
+        # Sampling prevents a TPU->CPU synchronization on every training batch.
+        self.drift_sample_every = 10 if self.runtime.is_xla else 5
+
+        print("Accelerator:", self.runtime.label)
+        print("Torch device:", self.device)
+        print("XLA enabled:", self.runtime.is_xla)
+        print("Batch size:", batch_size)
 
     @staticmethod
     def teacher_forcing_probability(epoch: int, epochs: int) -> float:
@@ -71,6 +88,15 @@ class V3Trainer:
             return 0.10
         progress = epoch / (epochs - 1)
         return max(0.10, 0.50 * (1.0 - progress))
+
+    def _move_batch(self, frames, actions):
+        # MpDeviceLoader already uploads XLA batches in the background.
+        if self.runtime.is_xla:
+            return frames, actions
+        return (
+            frames.to(self.device, non_blocking=self.runtime.kind == "cuda"),
+            actions.to(self.device, non_blocking=self.runtime.kind == "cuda"),
+        )
 
     def _correct_state(
         self,
@@ -82,56 +108,93 @@ class V3Trainer:
         step,
         corrections_enabled,
     ):
+        """
+        Return corrected state/input plus a per-sample correction mask.
+
+        Importantly, this avoids ``bool(mask.any())`` and ``.item()`` inside the
+        temporal loop. Those host reads force XLA synchronization and were one
+        reason TPU training could be extremely slow.
+        """
         batch = prediction.shape[0]
         mask = torch.zeros(batch, dtype=torch.bool, device=self.device)
 
-        if corrections_enabled and self.pipeline == "fixed_interval":
-            if (step + 1) % self.fixed_interval == 0:
-                mask[:] = True
+        if not corrections_enabled:
+            return hidden, prediction.detach(), mask
 
-        elif corrections_enabled and self.pipeline == "adaptive":
-            if self.adaptive_threshold is not None:
-                mask = drift_error > self.adaptive_threshold
+        if self.pipeline == "fixed_interval":
+            # This decision depends only on the Python step counter, so it does
+            # not require reading an XLA tensor back to the host.
+            if (step + 1) % self.fixed_interval != 0:
+                return hidden, prediction.detach(), mask
+            mask = torch.ones(batch, dtype=torch.bool, device=self.device)
 
-        if bool(mask.any()):
-            with torch.no_grad():
-                encoded_real = self.model.encode(real_next)
-            hidden = torch.where(mask.unsqueeze(1), encoded_real, hidden)
-            next_input = torch.where(
-                mask[:, None, None, None],
-                real_next,
-                prediction.detach(),
-            )
-            return hidden, next_input, int(mask.sum().item())
+        elif self.pipeline == "adaptive":
+            if self.adaptive_threshold is None:
+                return hidden, prediction.detach(), mask
+            mask = drift_error > float(self.adaptive_threshold)
 
-        return hidden, prediction.detach(), 0
+        else:  # baseline
+            return hidden, prediction.detach(), mask
+
+        # For adaptive this is intentionally tensorized: even if no sample is
+        # corrected, torch.where keeps the decision on the accelerator.
+        encoded_real = self.model.encode(real_next)
+        hidden = torch.where(mask.unsqueeze(1), encoded_real, hidden)
+        next_input = torch.where(
+            mask[:, None, None, None],
+            real_next,
+            prediction.detach(),
+        )
+        return hidden, next_input, mask
+
+    def _metric_tensor_dict(self):
+        return {
+            key: torch.zeros((), device=self.device)
+            for key in [
+                "loss",
+                "base",
+                "motion",
+                "foreground",
+                "delta",
+                "edge",
+                "motion_fraction",
+            ]
+        }
+
+    @staticmethod
+    def _sample_p90(samples):
+        if not samples:
+            return 0.0
+        values = np.concatenate(samples).astype(np.float64, copy=False)
+        return float(np.percentile(values, 90))
 
     def _run_train_epoch(self, epoch: int, epochs: int):
         self.model.train()
         tf_prob = self.teacher_forcing_probability(epoch, epochs)
         corrections_enabled = epoch >= self.warmup_epochs
 
-        totals = {
-            "loss": 0.0,
-            "base": 0.0,
-            "motion": 0.0,
-            "foreground": 0.0,
-            "delta": 0.0,
-            "edge": 0.0,
-            "motion_fraction": 0.0,
-        }
+        totals = self._metric_tensor_dict()
+        corrected_total = torch.zeros((), device=self.device)
+        drift_sum = torch.zeros((), device=self.device)
+        drift_count = torch.zeros((), device=self.device)
+        drift_samples = []
         batches = 0
-        corrected_samples = 0
-        drift_values = []
 
-        for frames, actions in self.train_loader:
-            frames = frames.to(self.device, non_blocking=True)
-            actions = actions.to(self.device, non_blocking=True)
+        loader = self.runtime.wrap_loader(self.train_loader)
+
+        for batch_index, (frames, actions) in enumerate(loader):
+            frames, actions = self._move_batch(frames, actions)
             batch_size, sequence_length = actions.shape
             hidden = self.model.init_hidden(batch_size, self.device)
             current_input = frames[:, 0]
             sequence_loss = torch.zeros((), device=self.device)
-            batch_parts = {key: 0.0 for key in totals if key != "loss"}
+            batch_parts = {
+                key: torch.zeros((), device=self.device)
+                for key in totals
+                if key != "loss"
+            }
+            batch_corrected = torch.zeros((), device=self.device)
+            batch_drift_chunks = []
 
             self.optimizer.zero_grad(set_to_none=True)
 
@@ -149,12 +212,14 @@ class V3Trainer:
                     real_next,
                 )
                 sequence_loss = sequence_loss + parts.total
-                batch_parts["base"] += float(parts.base)
-                batch_parts["motion"] += float(parts.motion)
-                batch_parts["foreground"] += float(parts.foreground)
-                batch_parts["delta"] += float(parts.delta)
-                batch_parts["edge"] += float(parts.edge)
-                batch_parts["motion_fraction"] += float(parts.motion_fraction)
+                batch_parts["base"] = batch_parts["base"] + parts.base
+                batch_parts["motion"] = batch_parts["motion"] + parts.motion
+                batch_parts["foreground"] = batch_parts["foreground"] + parts.foreground
+                batch_parts["delta"] = batch_parts["delta"] + parts.delta
+                batch_parts["edge"] = batch_parts["edge"] + parts.edge
+                batch_parts["motion_fraction"] = (
+                    batch_parts["motion_fraction"] + parts.motion_fraction
+                )
 
                 with torch.no_grad():
                     drift = per_sample_drift_error(
@@ -162,9 +227,11 @@ class V3Trainer:
                         real_current,
                         real_next,
                     )
-                    drift_values.extend(drift.detach().cpu().tolist())
+                    drift_sum = drift_sum + drift.sum()
+                    drift_count = drift_count + drift.numel()
+                    batch_drift_chunks.append(drift.detach())
 
-                hidden, next_input, corrected = self._correct_state(
+                hidden, next_input, correction_mask = self._correct_state(
                     hidden=hidden,
                     prediction=prediction,
                     real_next=real_next,
@@ -172,16 +239,17 @@ class V3Trainer:
                     step=step,
                     corrections_enabled=corrections_enabled,
                 )
-                corrected_samples += corrected
+                batch_corrected = batch_corrected + correction_mask.sum()
 
-                # Scheduled sampling only applies where a correction did not
-                # already anchor the model to the observation.
-                if corrected == 0 and tf_prob > 0:
+                # Apply scheduled sampling only to samples that were not already
+                # observation-corrected. Entirely tensorized for XLA.
+                if tf_prob > 0:
                     teacher_mask = (
                         torch.rand(batch_size, device=self.device) < tf_prob
                     )
+                    use_real = correction_mask | ((~correction_mask) & teacher_mask)
                     current_input = torch.where(
-                        teacher_mask[:, None, None, None],
+                        use_real[:, None, None, None],
                         real_next,
                         next_input,
                     )
@@ -190,31 +258,45 @@ class V3Trainer:
 
             sequence_loss = sequence_loss / sequence_length
             sequence_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            self.optimizer.step()
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), 1.0, foreach=False
+            )
+            self.runtime.optimizer_step(self.optimizer)
 
-            totals["loss"] += float(sequence_loss.detach().cpu())
+            totals["loss"] = totals["loss"] + sequence_loss.detach()
             for key in batch_parts:
-                totals[key] += batch_parts[key] / sequence_length
+                totals[key] = totals[key] + batch_parts[key] / sequence_length
+            corrected_total = corrected_total + batch_corrected
             batches += 1
+
+            # One sampled host transfer every few batches instead of 32 host
+            # transfers per batch as in the previous implementation.
+            if batch_index % self.drift_sample_every == 0:
+                sampled = torch.cat(batch_drift_chunks).detach().cpu().numpy()
+                drift_samples.append(sampled)
 
         if batches == 0:
             raise RuntimeError("No training batches were produced.")
 
-        if drift_values:
-            drift_array = np.asarray(drift_values, dtype=np.float64)
-            p90 = float(np.percentile(drift_array, 90))
-            mean_drift = float(drift_array.mean())
-        else:
-            p90 = 0.0
-            mean_drift = 0.0
+        self.runtime.sync()
 
-        # Adaptive threshold for the next epoch is calibrated to this model's
-        # current error scale rather than using the old 0.05 constant.
+        names = list(totals.keys())
+        metric_values = torch.stack([totals[name] for name in names]).detach().cpu().tolist()
+        result = {
+            name: float(value) / batches
+            for name, value in zip(names, metric_values)
+        }
+
+        drift_pair = torch.stack([drift_sum, drift_count]).detach().cpu().tolist()
+        mean_drift = float(drift_pair[0] / max(drift_pair[1], 1.0))
+        p90 = self._sample_p90(drift_samples)
+        corrected_samples = int(corrected_total.detach().cpu().item())
+
+        # Adaptive threshold for the next epoch is calibrated to the model's
+        # current motion-aware error scale rather than the old 0.05 constant.
         if self.pipeline == "adaptive":
             self.adaptive_threshold = p90
 
-        result = {key: value / batches for key, value in totals.items()}
         result.update(
             teacher_forcing=tf_prob,
             corrected_samples=corrected_samples,
@@ -227,19 +309,23 @@ class V3Trainer:
     @torch.no_grad()
     def validate(self):
         self.model.eval()
-        total = 0.0
+        total_loss = torch.zeros((), device=self.device)
+        drift_sum = torch.zeros((), device=self.device)
+        drift_count = torch.zeros((), device=self.device)
+        drift_samples = []
         batches = 0
-        drift_values = []
+
+        loader = self.runtime.wrap_loader(self.val_loader)
 
         # Validation is pure open-loop for all pipelines. This gives a common
-        # model-quality criterion for checkpoint selection.
-        for frames, actions in self.val_loader:
-            frames = frames.to(self.device, non_blocking=True)
-            actions = actions.to(self.device, non_blocking=True)
+        # checkpoint-selection criterion independent of correction strategy.
+        for batch_index, (frames, actions) in enumerate(loader):
+            frames, actions = self._move_batch(frames, actions)
             batch_size, sequence_length = actions.shape
             hidden = self.model.init_hidden(batch_size, self.device)
             current_input = frames[:, 0]
             sequence_loss = torch.zeros((), device=self.device)
+            batch_drifts = []
 
             for step in range(sequence_length):
                 real_current = frames[:, step]
@@ -252,18 +338,48 @@ class V3Trainer:
                 drift = per_sample_drift_error(
                     prediction, real_current, real_next
                 )
-                drift_values.extend(drift.detach().cpu().tolist())
+                drift_sum = drift_sum + drift.sum()
+                drift_count = drift_count + drift.numel()
+                batch_drifts.append(drift.detach())
                 current_input = prediction
 
-            total += float((sequence_loss / sequence_length).cpu())
+            total_loss = total_loss + sequence_loss / sequence_length
             batches += 1
 
-        drift_array = np.asarray(drift_values, dtype=np.float64)
+            if batch_index % self.drift_sample_every == 0:
+                sampled = torch.cat(batch_drifts).detach().cpu().numpy()
+                drift_samples.append(sampled)
+
+        self.runtime.sync()
+
+        total_value = float(total_loss.detach().cpu())
+        drift_pair = torch.stack([drift_sum, drift_count]).detach().cpu().tolist()
+        mean_drift = float(drift_pair[0] / max(drift_pair[1], 1.0))
+
         return {
-            "validation_loss": total / max(batches, 1),
-            "validation_mean_drift": float(drift_array.mean()),
-            "validation_p90_drift": float(np.percentile(drift_array, 90)),
+            "validation_loss": total_value / max(batches, 1),
+            "validation_mean_drift": mean_drift,
+            "validation_p90_drift": self._sample_p90(drift_samples),
         }
+
+    def _save_best(self, model_path, checkpoint_path, epoch, best_val, val_result):
+        self.runtime.sync()
+        self.runtime.save(self.model.state_dict(), model_path)
+        self.runtime.save(
+            {
+                "pipeline": self.pipeline,
+                "epoch": epoch + 1,
+                "best_validation_loss": best_val,
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "model_config": self.model.config.to_dict(),
+                "fixed_interval": self.fixed_interval,
+                "adaptive_threshold": self.adaptive_threshold,
+                "validation_p90_drift": val_result["validation_p90_drift"],
+                "training_accelerator": self.runtime.kind,
+            },
+            checkpoint_path,
+        )
 
     def train(self, epochs: int):
         best_val = math.inf
@@ -276,6 +392,7 @@ class V3Trainer:
             val_result = self.validate()
             record = {
                 "epoch": epoch + 1,
+                "accelerator": self.runtime.kind,
                 **train_result,
                 **val_result,
             }
@@ -293,26 +410,19 @@ class V3Trainer:
 
             if val_result["validation_loss"] < best_val:
                 best_val = val_result["validation_loss"]
-                torch.save(self.model.state_dict(), model_path)
-                torch.save(
-                    {
-                        "pipeline": self.pipeline,
-                        "epoch": epoch + 1,
-                        "best_validation_loss": best_val,
-                        "model_state_dict": self.model.state_dict(),
-                        "optimizer_state_dict": self.optimizer.state_dict(),
-                        "model_config": self.model.config.to_dict(),
-                        "fixed_interval": self.fixed_interval,
-                        "adaptive_threshold": self.adaptive_threshold,
-                        "validation_p90_drift": val_result["validation_p90_drift"],
-                    },
+                self._save_best(
+                    model_path,
                     checkpoint_path,
+                    epoch,
+                    best_val,
+                    val_result,
                 )
                 print("  Best V3 checkpoint updated.")
 
             with history_path.open("w", encoding="utf-8") as file:
                 json.dump(self.history, file, indent=2)
 
+        self.runtime.sync()
         print(f"Training complete. Best validation loss: {best_val:.6f}")
         print("Model:", model_path)
         print("History:", history_path)

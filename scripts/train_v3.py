@@ -16,13 +16,20 @@ def main():
         choices=["baseline", "fixed_interval", "adaptive"],
     )
     parser.add_argument("--epochs", type=int, default=60)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--data-folder", default="data_v3")
     parser.add_argument("--model-folder", default="models_v3")
     parser.add_argument("--results-folder", default="results_v3")
     parser.add_argument("--sequence-length", type=int, default=32)
     parser.add_argument("--interval", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument(
+        "--device",
+        default="auto",
+        choices=["auto", "cuda", "tpu", "cpu"],
+        help="auto prefers CUDA, then TPU/XLA, then CPU",
+    )
+    parser.add_argument("--num-workers", type=int, default=2)
     args = parser.parse_args()
 
     total_frames, split = dataset_split_points(args.data_folder, 0.8)
@@ -59,6 +66,8 @@ def main():
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         fixed_interval=args.interval,
+        device=args.device,
+        num_workers=args.num_workers,
     )
     trainer.train(args.epochs)
 

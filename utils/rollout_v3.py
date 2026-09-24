@@ -22,6 +22,7 @@ class RolloutGeneratorV3:
         strategy="baseline",
         fixed_interval=8,
         adaptive_threshold=None,
+        runtime=None,
     ):
         if strategy not in {"baseline", "fixed_interval", "adaptive"}:
             raise ValueError("Unknown V3 rollout strategy.")
@@ -29,6 +30,7 @@ class RolloutGeneratorV3:
         self.strategy = strategy
         self.fixed_interval = int(fixed_interval)
         self.adaptive_threshold = adaptive_threshold
+        self.runtime = runtime
         self.correction_steps = []
 
     @torch.no_grad()
@@ -38,7 +40,7 @@ class RolloutGeneratorV3:
         hidden = self.model.init_hidden(1, device)
         frame = initial_frame
         predictions = [initial_frame.squeeze(0)]
-        self.correction_steps = []
+        correction_masks = []
 
         if self.strategy != "baseline" and real_sequence is None:
             raise ValueError(
@@ -51,13 +53,14 @@ class RolloutGeneratorV3:
             prediction, hidden = self.model(frame, action.view(1), hidden)
             predictions.append(prediction.squeeze(0))
             next_input = prediction
+            correction_mask = torch.zeros(1, dtype=torch.bool, device=device)
 
             if self.strategy == "fixed_interval":
                 if (step + 1) % self.fixed_interval == 0:
                     real_next = real_sequence[step + 1].unsqueeze(0)
                     hidden = self.model.encode(real_next)
                     next_input = real_next
-                    self.correction_steps.append(step + 1)
+                    correction_mask = torch.ones(1, dtype=torch.bool, device=device)
 
             elif self.strategy == "adaptive":
                 if self.adaptive_threshold is None:
@@ -66,12 +69,33 @@ class RolloutGeneratorV3:
                 real_next = real_sequence[step + 1].unsqueeze(0)
                 error = per_sample_drift_error(
                     prediction, real_current, real_next
-                )[0]
-                if float(error) > float(self.adaptive_threshold):
-                    hidden = self.model.encode(real_next)
-                    next_input = real_next
-                    self.correction_steps.append(step + 1)
+                )
+                correction_mask = error > float(self.adaptive_threshold)
 
+                # Keep the correction decision on the accelerator rather than
+                # converting an XLA tensor to a Python bool every frame.
+                encoded_real = self.model.encode(real_next)
+                hidden = torch.where(
+                    correction_mask.unsqueeze(1), encoded_real, hidden
+                )
+                next_input = torch.where(
+                    correction_mask[:, None, None, None],
+                    real_next,
+                    prediction,
+                )
+
+            correction_masks.append(correction_mask)
             frame = next_input
+
+        if self.runtime is not None:
+            self.runtime.sync()
+
+        if correction_masks:
+            masks = torch.cat(correction_masks).detach().cpu().numpy()
+            self.correction_steps = [
+                index + 1 for index, corrected in enumerate(masks) if bool(corrected)
+            ]
+        else:
+            self.correction_steps = []
 
         return torch.stack(predictions)

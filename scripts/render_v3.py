@@ -9,6 +9,7 @@ from training.dataset import WorldModelDataset
 from utils.rollout_v3 import RolloutGeneratorV3
 from utils.video import render_comparison_video
 from v3.config import V3Config
+from v3.device import resolve_accelerator
 from v3.world_model import WorldModelV3
 
 
@@ -19,7 +20,7 @@ def load_checkpoint(pipeline, model_folder, device):
         raise FileNotFoundError(model_path)
 
     model = WorldModelV3(V3Config())
-    state = torch.load(model_path, map_location=device)
+    state = torch.load(model_path, map_location="cpu")
     model.load_state_dict(state)
     model.to(device).eval()
 
@@ -44,9 +45,17 @@ def main():
     parser.add_argument("--output-folder", default="outputs_v3")
     parser.add_argument("--interval", type=int, default=None)
     parser.add_argument("--adaptive-threshold", type=float, default=None)
+    parser.add_argument(
+        "--device",
+        default="auto",
+        choices=["auto", "cuda", "tpu", "cpu"],
+    )
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    runtime = resolve_accelerator(args.device)
+    device = runtime.device
+    print("Accelerator:", runtime.label)
+
     dataset = WorldModelDataset(args.data_folder)
     if args.start + args.horizon >= len(dataset):
         raise ValueError("Requested rollout exceeds dataset length.")
@@ -72,6 +81,7 @@ def main():
         strategy=args.pipeline,
         fixed_interval=interval,
         adaptive_threshold=adaptive_threshold,
+        runtime=runtime,
     )
     prediction = generator.generate(
         initial,
@@ -79,18 +89,22 @@ def main():
         real_sequence=real if args.pipeline != "baseline" else None,
     )
 
+    runtime.sync()
+    prediction_cpu = prediction.cpu()
+
     os.makedirs(args.output_folder, exist_ok=True)
     output_path = os.path.join(
         args.output_folder,
         f"{args.pipeline}_start{args.start}_h{args.horizon}.mp4",
     )
-    render_comparison_video(real, prediction.cpu(), output_path, fps=args.fps)
+    render_comparison_video(real, prediction_cpu, output_path, fps=args.fps)
     print("Saved:", output_path)
-    print("Prediction shape:", tuple(prediction.shape))
+    print("Prediction shape:", tuple(prediction_cpu.shape))
     print("Correction steps:", generator.correction_steps[:30])
     print("Number of corrections:", len(generator.correction_steps))
     if args.pipeline == "adaptive":
         print("Adaptive threshold:", adaptive_threshold)
+
 
 if __name__ == "__main__":
     main()
