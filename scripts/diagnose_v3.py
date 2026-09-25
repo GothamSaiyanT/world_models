@@ -17,6 +17,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-folder", default="data_v3")
     parser.add_argument("--model-folder", default="models_v3")
+    parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--horizon", type=int, default=100)
     parser.add_argument(
         "--device",
@@ -42,9 +43,29 @@ def main():
     print("Accelerator:", runtime.label)
 
     dataset = WorldModelDataset(args.data_folder)
-    initial = dataset[0][0].unsqueeze(0).to(device)
-    actions = torch.stack([dataset[i][1] for i in range(args.horizon)]).to(device)
-    real = torch.stack([dataset[i][0] for i in range(args.horizon + 1)])
+
+    if args.start < 0:
+        raise ValueError("--start cannot be negative.")
+
+    if args.horizon < 1:
+        raise ValueError("--horizon must be at least 1.")
+
+    if args.start + args.horizon >= len(dataset):
+        raise ValueError(
+            f"Requested start={args.start}, horizon={args.horizon}, "
+            f"but dataset contains only {len(dataset)} transitions."
+        )
+
+    print(f"Evaluation start: {args.start}")
+    print(f"Evaluation horizon: {args.horizon}")
+
+    initial = dataset[args.start][0].unsqueeze(0).to(device)
+    actions = torch.stack(
+        [dataset[args.start + i][1] for i in range(args.horizon)]
+    ).to(device)
+    real = torch.stack(
+        [dataset[args.start + i][0] for i in range(args.horizon + 1)]
+    )
 
     for pipeline in ["baseline", "fixed_interval", "adaptive"]:
         model_path = os.path.join(args.model_folder, f"best_{pipeline}_model.pt")
