@@ -6,7 +6,7 @@ def motion_weighted_error(
     target,
     current_frame,
     motion_weight=2.0,
-    motion_threshold=0.03,
+    motion_threshold=0.003,
 ):
     """Same weighting scheme as StableMotionWeightedMSELoss, but as a plain
     function so it can be called outside training (e.g. during rollout,
@@ -36,7 +36,7 @@ class StableMotionWeightedMSELoss:
     def __init__(
         self,
         motion_weight=2.0,
-        motion_threshold=0.03
+        motion_threshold=0.003
     ):
 
         self.motion_weight = motion_weight
