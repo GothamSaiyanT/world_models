@@ -31,10 +31,10 @@ HIDDEN_SIZE = 128
 SEQUENCE_LENGTH = 16
 TRAIN_END = 8_000
 BATCH_SIZE = 32
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.01
 MAX_EPOCHS = 50
 EARLY_STOPPING_PATIENCE = 10
-MOTION_WEIGHT = 8.0
+MOTION_WEIGHT = 20.0
 MOTION_THRESHOLD = 0.05
 # Only ~1-2% of pixels are typically "moving" between two consecutive real
 # frames (mostly the paddle, since it's much bigger than the ball) — so even
@@ -43,7 +43,7 @@ MOTION_THRESHOLD = 0.05
 # heuristic (see core.loss.detect_ball_mask) rather than a motion heuristic.
 # Sanity-check these three against real frames with
 # scripts/inspect_ball_mask.py before a full training run.
-BALL_WEIGHT = 80.0
+BALL_WEIGHT = 40.0
 BALL_WALL_MARGIN_PX = 4
 BALL_PADDLE_BAND_PX = 10
 BALL_BRIGHTNESS_THRESHOLD = 0.3

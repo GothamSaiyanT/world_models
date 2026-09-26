@@ -145,7 +145,7 @@ class BallAwareMotionWeightedMSELoss:
         self,
         motion_weight=8.0,
         motion_threshold=0.05,
-        ball_weight=80.0,
+        ball_weight=40.0,
         wall_margin=4,
         paddle_band=10,
         ball_brightness_threshold=0.3,
