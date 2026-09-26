@@ -27,8 +27,6 @@ class Linear(Module):
 
     def forward(self,x):
 
-        #self.input = x
-
         return x @ self.weight.data.T + self.bias.data
 
     def parameters(self):

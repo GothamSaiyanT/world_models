@@ -21,3 +21,21 @@ data_v3/
 models_v3/
 results_v3/
 outputs_v3/
+
+# Generated datasets
+data_v3/
+data_v4_64/
+
+# Trained checkpoints
+models_v3/
+models_v4_64/
+
+# Generated outputs/results
+outputs_v3/
+outputs_v4_64/
+results_v3/
+results_v4_64/
+
+# Python cache
+__pycache__/
+*.pyc

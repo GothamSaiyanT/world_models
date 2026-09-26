@@ -6,12 +6,8 @@ from core.module import Module
 
 def zero_pad_2d(x, padding):
     """
-    Adds zero padding around a 4D image tensor.
-
     Input shape:
         (batch_size, channels, height, width)
-
-    No torch.nn or torch.nn.functional is used.
     """
 
     if padding == 0:
@@ -88,13 +84,6 @@ def zero_pad_2d(x, padding):
 class Conv2D(Module):
     """
     Custom vectorised 2D convolution.
-
-    This implementation does not use:
-
-        torch.nn
-        torch.nn.functional
-        torch.nn.Conv2d
-
     It manually performs convolution by:
 
         1. Extracting sliding image patches.
