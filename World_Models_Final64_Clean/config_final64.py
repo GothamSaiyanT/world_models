@@ -43,7 +43,7 @@ MOTION_THRESHOLD = 0.05
 # heuristic (see core.loss.detect_ball_mask) rather than a motion heuristic.
 # Sanity-check these three against real frames with
 # scripts/inspect_ball_mask.py before a full training run.
-BALL_WEIGHT = 40.0
+BALL_WEIGHT = 80.0
 BALL_WALL_MARGIN_PX = 4
 BALL_PADDLE_BAND_PX = 10
 BALL_BRIGHTNESS_THRESHOLD = 0.3

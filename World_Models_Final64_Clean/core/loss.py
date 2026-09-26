@@ -5,7 +5,7 @@ def motion_weighted_error(
     prediction,
     target,
     current_frame,
-    motion_weight=2.0,
+    motion_weight=4.0,
     motion_threshold=0.05,
 ):
     """Same weighting scheme as StableMotionWeightedMSELoss, but as a plain
@@ -35,7 +35,7 @@ class StableMotionWeightedMSELoss:
 
     def __init__(
         self,
-        motion_weight=2.0,
+        motion_weight=4.0,
         motion_threshold=0.05
     ):
 
@@ -145,7 +145,7 @@ class BallAwareMotionWeightedMSELoss:
         self,
         motion_weight=8.0,
         motion_threshold=0.05,
-        ball_weight=40.0,
+        ball_weight=80.0,
         wall_margin=4,
         paddle_band=10,
         ball_brightness_threshold=0.3,
