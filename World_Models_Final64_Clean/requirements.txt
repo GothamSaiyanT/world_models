@@ -1,0 +1,11 @@
+torch
+numpy
+pandas
+matplotlib
+scikit-image
+plotly
+streamlit
+opencv-python-headless
+"gymnasium[atari]"
+ale-py
+pytest

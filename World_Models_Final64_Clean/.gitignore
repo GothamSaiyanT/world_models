@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Generated datasets/checkpoints/outputs
+# These are deliberately excluded so GitHub never rejects a push because of large files.
+data_final64/
+models_final64/
+results_final64/
+outputs_final64/
+
+# Legacy generated folders from earlier project versions
+/data/
+/models/
+/data_v3/
+/models_v3/
+/results_v3/
+/outputs_v3/
+/data_v4_64/
+/models_v4_64/
+/results_v4_64/
+/outputs_v4_64/
+/data_original64/
+/models_original64/
+/results_original64/
+
+# Large binary experiment files should never be committed accidentally.
+*.npy
+*.npz
+*.pt
+*.pth
+*.mp4
+*.avi
+*.gif
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
