@@ -64,7 +64,7 @@ class Trainer:
         self,
         model,
         dataset,
-        learning_rate=0.003,
+        learning_rate=0.0003,
         batch_size=32
     ):
 

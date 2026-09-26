@@ -34,7 +34,7 @@ class Adam:
     def __init__(
         self,
         parameters,
-        learning_rate=0.003,
+        learning_rate=0.0003,
         beta1=0.9,
         beta2=0.999,
         epsilon=1e-8

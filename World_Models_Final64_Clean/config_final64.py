@@ -31,10 +31,10 @@ HIDDEN_SIZE = 128
 SEQUENCE_LENGTH = 16
 TRAIN_END = 8_000
 BATCH_SIZE = 32
-LEARNING_RATE = 0.01
+LEARNING_RATE = 0.001
 MAX_EPOCHS = 50
 EARLY_STOPPING_PATIENCE = 10
-MOTION_WEIGHT = 20.0
+MOTION_WEIGHT = 8.0
 MOTION_THRESHOLD = 0.05
 # Only ~1-2% of pixels are typically "moving" between two consecutive real
 # frames (mostly the paddle, since it's much bigger than the ball) — so even
