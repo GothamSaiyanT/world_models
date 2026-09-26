@@ -12,6 +12,10 @@ import torch
 from torch.utils.data import DataLoader
 
 from config_final64 import (
+    BALL_BRIGHTNESS_THRESHOLD,
+    BALL_PADDLE_BAND_PX,
+    BALL_WALL_MARGIN_PX,
+    BALL_WEIGHT,
     BATCH_SIZE,
     DATA_FOLDER,
     EARLY_STOPPING_PATIENCE,
@@ -29,7 +33,7 @@ from config_final64 import (
     SEQUENCE_LENGTH,
     TRAIN_END,
 )
-from core.loss import StableMotionWeightedMSELoss
+from core.loss import BallAwareMotionWeightedMSELoss
 from core.world_model import WorldModel
 from training.final64_dataset import SequenceRangeDataset
 from training.optimizer import Adam
@@ -201,9 +205,13 @@ def main():
         image_size=IMAGE_SIZE,
     ).to(device)
 
-    criterion = StableMotionWeightedMSELoss(
+    criterion = BallAwareMotionWeightedMSELoss(
         motion_weight=MOTION_WEIGHT,
         motion_threshold=MOTION_THRESHOLD,
+        ball_weight=BALL_WEIGHT,
+        wall_margin=BALL_WALL_MARGIN_PX,
+        paddle_band=BALL_PADDLE_BAND_PX,
+        ball_brightness_threshold=BALL_BRIGHTNESS_THRESHOLD,
     )
     optimizer = Adam(list(model.parameters()), args.learning_rate)
 
@@ -282,6 +290,10 @@ def main():
             "learning_rate": args.learning_rate,
             "motion_weight": MOTION_WEIGHT,
             "motion_threshold": MOTION_THRESHOLD,
+            "ball_weight": BALL_WEIGHT,
+            "ball_wall_margin_px": BALL_WALL_MARGIN_PX,
+            "ball_paddle_band_px": BALL_PADDLE_BAND_PX,
+            "ball_brightness_threshold": BALL_BRIGHTNESS_THRESHOLD,
             "max_epochs": args.epochs,
             "patience": args.patience,
             "best_epoch": best_epoch,

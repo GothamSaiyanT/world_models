@@ -1,8 +1,18 @@
 import argparse
 import torch
 
-from config_final64 import HIDDEN_SIZE, IMAGE_SIZE, LATENT_SIZE, MOTION_THRESHOLD, MOTION_WEIGHT
-from core.loss import StableMotionWeightedMSELoss
+from config_final64 import (
+    BALL_BRIGHTNESS_THRESHOLD,
+    BALL_PADDLE_BAND_PX,
+    BALL_WALL_MARGIN_PX,
+    BALL_WEIGHT,
+    HIDDEN_SIZE,
+    IMAGE_SIZE,
+    LATENT_SIZE,
+    MOTION_THRESHOLD,
+    MOTION_WEIGHT,
+)
+from core.loss import BallAwareMotionWeightedMSELoss
 from core.world_model import WorldModel
 from training.optimizer import Adam
 from training.trainer import clip_gradient_norm
@@ -31,9 +41,13 @@ def main():
 
     params = list(model.parameters())
     optimizer = Adam(params, learning_rate=0.001)
-    criterion = StableMotionWeightedMSELoss(
+    criterion = BallAwareMotionWeightedMSELoss(
         motion_weight=MOTION_WEIGHT,
         motion_threshold=MOTION_THRESHOLD,
+        ball_weight=BALL_WEIGHT,
+        wall_margin=BALL_WALL_MARGIN_PX,
+        paddle_band=BALL_PADDLE_BAND_PX,
+        ball_brightness_threshold=BALL_BRIGHTNESS_THRESHOLD,
     )
 
     batch = 2

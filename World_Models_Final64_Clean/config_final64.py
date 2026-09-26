@@ -34,14 +34,33 @@ BATCH_SIZE = 32
 LEARNING_RATE = 0.001
 MAX_EPOCHS = 50
 EARLY_STOPPING_PATIENCE = 10
-MOTION_WEIGHT = 2.0
+MOTION_WEIGHT = 8.0
 MOTION_THRESHOLD = 0.05
+# Only ~1-2% of pixels are typically "moving" between two consecutive real
+# frames (mostly the paddle, since it's much bigger than the ball) — so even
+# MOTION_WEIGHT above barely shifts the loss towards them. BALL_WEIGHT below
+# gives the ball (specifically) its own much larger share, via a spatial
+# heuristic (see core.loss.detect_ball_mask) rather than a motion heuristic.
+# Sanity-check these three against real frames with
+# scripts/inspect_ball_mask.py before a full training run.
+BALL_WEIGHT = 40.0
+BALL_WALL_MARGIN_PX = 4
+BALL_PADDLE_BAND_PX = 10
+BALL_BRIGHTNESS_THRESHOLD = 0.3
 
 # Frozen final evaluation protocol.
 EVALUATION_STARTS = (0, 500, 1000, 2000, 3000)
 EVALUATION_HORIZON = 100
 FIXED_INTERVAL = 10
 ADAPTIVE_THRESHOLD = 0.0005
+# Trigger for the "adaptive_motion" strategy: same motion-weighting scheme as
+# the training loss (MOTION_WEIGHT / MOTION_THRESHOLD above), applied to the
+# rollout correction decision instead of plain whole-frame MSE. This starting
+# value has NOT been calibrated against real rollout data yet — before
+# trusting it, run a rollout and look at the "diagnostics" list returned by
+# generate_rollout to see the actual distribution of motion_weighted_error,
+# then adjust this so it fires when the ball/paddle are visibly wrong.
+ADAPTIVE_MOTION_THRESHOLD = 0.001
 
 MODEL_PATH = MODEL_FOLDER / "best_world_model.npz"
 TRAINING_HISTORY_CSV = RESULT_FOLDER / "training_history.csv"

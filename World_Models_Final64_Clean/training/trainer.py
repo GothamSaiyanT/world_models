@@ -1,7 +1,15 @@
 import torch
 from torch.utils.data import DataLoader
 
-from core.loss import StableMotionWeightedMSELoss
+from config_final64 import (
+    BALL_BRIGHTNESS_THRESHOLD,
+    BALL_PADDLE_BAND_PX,
+    BALL_WALL_MARGIN_PX,
+    BALL_WEIGHT,
+    MOTION_THRESHOLD,
+    MOTION_WEIGHT,
+)
+from core.loss import BallAwareMotionWeightedMSELoss
 from training.optimizer import Adam
 
 
@@ -87,9 +95,13 @@ class Trainer:
             )
         )
 
-        self.criterion = StableMotionWeightedMSELoss(
-            motion_weight=2.0,
-            motion_threshold=0.05
+        self.criterion = BallAwareMotionWeightedMSELoss(
+            motion_weight=MOTION_WEIGHT,
+            motion_threshold=MOTION_THRESHOLD,
+            ball_weight=BALL_WEIGHT,
+            wall_margin=BALL_WALL_MARGIN_PX,
+            paddle_band=BALL_PADDLE_BAND_PX,
+            ball_brightness_threshold=BALL_BRIGHTNESS_THRESHOLD,
         )
 
         self.optimizer = Adam(
