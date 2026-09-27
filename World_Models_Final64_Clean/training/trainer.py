@@ -3,8 +3,8 @@ from torch.utils.data import DataLoader
 
 from config_final64 import (
     BALL_BRIGHTNESS_THRESHOLD,
-    BALL_PADDLE_BAND_PX,
-    BALL_WALL_MARGIN_PX,
+    BALL_MAX_AREA_PX,
+    BALL_MIN_AREA_PX,
     BALL_WEIGHT,
     MOTION_THRESHOLD,
     MOTION_WEIGHT,
@@ -99,8 +99,8 @@ class Trainer:
             motion_weight=MOTION_WEIGHT,
             motion_threshold=MOTION_THRESHOLD,
             ball_weight=BALL_WEIGHT,
-            wall_margin=BALL_WALL_MARGIN_PX,
-            paddle_band=BALL_PADDLE_BAND_PX,
+            ball_min_area=BALL_MIN_AREA_PX,
+            ball_max_area=BALL_MAX_AREA_PX,
             ball_brightness_threshold=BALL_BRIGHTNESS_THRESHOLD,
         )
 

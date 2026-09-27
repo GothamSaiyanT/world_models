@@ -1,4 +1,7 @@
+import numpy as np
 import torch
+
+from scipy import ndimage
 
 
 def motion_weighted_error(
@@ -6,7 +9,7 @@ def motion_weighted_error(
     target,
     current_frame,
     motion_weight=2.0,
-    motion_threshold=0.003,
+    motion_threshold=0.05,
 ):
     """Same weighting scheme as StableMotionWeightedMSELoss, but as a plain
     function so it can be called outside training (e.g. during rollout,
@@ -36,7 +39,7 @@ class StableMotionWeightedMSELoss:
     def __init__(
         self,
         motion_weight=2.0,
-        motion_threshold=0.003
+        motion_threshold=0.05
     ):
 
         self.motion_weight = motion_weight
@@ -92,40 +95,52 @@ class StableMotionWeightedMSELoss:
 
 def detect_ball_mask(
     frame,
-    wall_margin=4,
-    paddle_band=10,
     brightness_threshold=0.3,
+    min_ball_area=1,
+    max_ball_area=12,
 ):
-    """Heuristic mask that isolates the ball, independent of motion.
+    """Heuristic mask that isolates the ball by SIZE, not by location.
 
-    Assumes the cropped Breakout play area (see CROP_TOP / CROP_BOTTOM in
-    config_final64.py) has: a bright wall border a few pixels wide on the
-    left/right/top, and the paddle confined to a band of rows near the
-    bottom. Excluding both of those and thresholding what's left catches the
-    ball (a small bright blob) without catching the paddle or the walls.
+    An earlier version of this function tried to exclude the paddle and
+    walls by their position (a margin from the edges, a band at the
+    bottom). That assumed the crop had no bricks in view — wrong for this
+    dataset: the brick rows near the top are bright too, and a
+    position-based exclusion has no way to tell "brick block" apart from
+    "ball" (both end up inside the same allowed region). The result was
+    the ball_weight below being spent almost entirely on bricks (in one
+    check, ~900 flagged pixels, of which only 4 were actually the ball).
 
-    This is a heuristic, not ground truth — it can misfire if the wall/paddle
-    geometry doesn't match these assumptions. Check it with
-    scripts/inspect_ball_mask.py against a handful of real frames before
-    trusting it in a training run, and adjust wall_margin / paddle_band /
-    brightness_threshold if the paddle or walls leak into the mask.
+    Instead: threshold on brightness, then connected-component label the
+    result. The ball is a small isolated blob; the paddle and any brick
+    block are large contiguous regions. Keeping only components in
+    [min_ball_area, max_ball_area] pixels finds the ball regardless of
+    where it is in the frame, and regardless of the crop's wall/brick/
+    paddle layout. Still a heuristic — check it with
+    scripts/inspect_ball_mask.py against real frames, and widen
+    max_ball_area if the ball renders larger than ~12 pixels at your
+    resolution, or narrow it if paddle fragments start getting caught.
 
     frame: (B, 1, H, W) tensor in [0, 1].
     Returns a bool tensor of the same shape.
     """
 
-    batch_size, channels, height, width = frame.shape
-    mask = torch.zeros_like(frame, dtype=torch.bool)
+    frame_np = frame.detach().to("cpu").numpy()
+    batch_size, channels, height, width = frame_np.shape
+    mask_np = np.zeros_like(frame_np, dtype=bool)
 
-    row_end = max(height - paddle_band, wall_margin + 1)
-    col_end = max(width - wall_margin, wall_margin + 1)
+    for b in range(batch_size):
+        for c in range(channels):
+            bright = frame_np[b, c] > brightness_threshold
+            labeled, num_components = ndimage.label(bright)
+            if num_components == 0:
+                continue
 
-    interior = frame[:, :, wall_margin:row_end, wall_margin:col_end]
-    mask[:, :, wall_margin:row_end, wall_margin:col_end] = (
-        interior > brightness_threshold
-    )
+            sizes = ndimage.sum(bright, labeled, range(1, num_components + 1))
+            for component_id, size in enumerate(sizes, start=1):
+                if min_ball_area <= size <= max_ball_area:
+                    mask_np[b, c][labeled == component_id] = True
 
-    return mask
+    return torch.from_numpy(mask_np).to(device=frame.device)
 
 
 class BallAwareMotionWeightedMSELoss:
@@ -135,10 +150,11 @@ class BallAwareMotionWeightedMSELoss:
     typical frame-to-frame transition only ~1% of pixels move at all (mostly
     the paddle, since it's much bigger than the ball), so even a large
     motion_weight barely changes the ball's share of the total loss. This
-    adds a second mask — detect_ball_mask, spatial rather than motion-based —
-    with its own (larger) weight, so the ball gets meaningful gradient signal
-    even in the (rare) frames where it isn't classified as "moving", and
-    regardless of how many other pixels are moving in that frame.
+    adds a second mask — detect_ball_mask, size-based rather than
+    motion-based — with its own (larger) weight, so the ball gets
+    meaningful gradient signal even in the (rare) frames where it isn't
+    classified as "moving", and regardless of how many other pixels are
+    moving in that frame.
     """
 
     def __init__(
@@ -146,17 +162,17 @@ class BallAwareMotionWeightedMSELoss:
         motion_weight=8.0,
         motion_threshold=0.05,
         ball_weight=40.0,
-        wall_margin=4,
-        paddle_band=10,
         ball_brightness_threshold=0.3,
+        ball_min_area=1,
+        ball_max_area=12,
     ):
 
         self.motion_weight = motion_weight
         self.motion_threshold = motion_threshold
         self.ball_weight = ball_weight
-        self.wall_margin = wall_margin
-        self.paddle_band = paddle_band
         self.ball_brightness_threshold = ball_brightness_threshold
+        self.ball_min_area = ball_min_area
+        self.ball_max_area = ball_max_area
 
     def forward(
         self,
@@ -172,9 +188,9 @@ class BallAwareMotionWeightedMSELoss:
 
         ball_mask = detect_ball_mask(
             target,
-            wall_margin=self.wall_margin,
-            paddle_band=self.paddle_band,
             brightness_threshold=self.ball_brightness_threshold,
+            min_ball_area=self.ball_min_area,
+            max_ball_area=self.ball_max_area,
         ).to(prediction.dtype)
 
         pixel_weights = (

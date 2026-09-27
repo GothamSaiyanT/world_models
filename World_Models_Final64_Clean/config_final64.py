@@ -39,14 +39,17 @@ MOTION_THRESHOLD = 0.05
 # Only ~1-2% of pixels are typically "moving" between two consecutive real
 # frames (mostly the paddle, since it's much bigger than the ball) — so even
 # MOTION_WEIGHT above barely shifts the loss towards them. BALL_WEIGHT below
-# gives the ball (specifically) its own much larger share, via a spatial
-# heuristic (see core.loss.detect_ball_mask) rather than a motion heuristic.
-# Sanity-check these three against real frames with
-# scripts/inspect_ball_mask.py before a full training run.
+# gives the ball (specifically) its own much larger share, via a size-based
+# heuristic (see core.loss.detect_ball_mask: it isolates small isolated
+# bright blobs by connected-component size, which is what actually tells the
+# ball apart from the paddle and any brick block — position-based
+# exclusion isn't reliable, since bricks can be bright too).
+# Sanity-check these against real frames with scripts/inspect_ball_mask.py
+# before a full training run.
 BALL_WEIGHT = 40.0
-BALL_WALL_MARGIN_PX = 4
-BALL_PADDLE_BAND_PX = 10
 BALL_BRIGHTNESS_THRESHOLD = 0.3
+BALL_MIN_AREA_PX = 1
+BALL_MAX_AREA_PX = 12
 
 # Frozen final evaluation protocol.
 EVALUATION_STARTS = (0, 500, 1000, 2000, 3000)

@@ -13,8 +13,8 @@ from torch.utils.data import DataLoader
 
 from config_final64 import (
     BALL_BRIGHTNESS_THRESHOLD,
-    BALL_PADDLE_BAND_PX,
-    BALL_WALL_MARGIN_PX,
+    BALL_MAX_AREA_PX,
+    BALL_MIN_AREA_PX,
     BALL_WEIGHT,
     BATCH_SIZE,
     DATA_FOLDER,
@@ -209,8 +209,8 @@ def main():
         motion_weight=MOTION_WEIGHT,
         motion_threshold=MOTION_THRESHOLD,
         ball_weight=BALL_WEIGHT,
-        wall_margin=BALL_WALL_MARGIN_PX,
-        paddle_band=BALL_PADDLE_BAND_PX,
+        ball_min_area=BALL_MIN_AREA_PX,
+        ball_max_area=BALL_MAX_AREA_PX,
         ball_brightness_threshold=BALL_BRIGHTNESS_THRESHOLD,
     )
     optimizer = Adam(list(model.parameters()), args.learning_rate)
@@ -291,8 +291,8 @@ def main():
             "motion_weight": MOTION_WEIGHT,
             "motion_threshold": MOTION_THRESHOLD,
             "ball_weight": BALL_WEIGHT,
-            "ball_wall_margin_px": BALL_WALL_MARGIN_PX,
-            "ball_paddle_band_px": BALL_PADDLE_BAND_PX,
+            "ball_min_area_px": BALL_MIN_AREA_PX,
+            "ball_max_area_px": BALL_MAX_AREA_PX,
             "ball_brightness_threshold": BALL_BRIGHTNESS_THRESHOLD,
             "max_epochs": args.epochs,
             "patience": args.patience,
