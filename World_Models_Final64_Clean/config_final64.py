@@ -33,9 +33,15 @@ TRAIN_END = 8_000
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001
 MAX_EPOCHS = 70
-EARLY_STOPPING_PATIENCE = 10
 MOTION_WEIGHT = 2.0
 MOTION_THRESHOLD = 0.05
+
+# Foreground-aware loss.
+# Gives additional importance to visible objects such as
+# the ball, paddle and bricks instead of allowing the
+# black background to dominate the loss.
+FOREGROUND_WEIGHT = 2.0
+FOREGROUND_THRESHOLD = 0.05
 
 # Frozen final evaluation protocol.
 EVALUATION_STARTS = (0, 500, 1000, 2000, 3000)
