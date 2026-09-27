@@ -218,7 +218,7 @@ def main():
     print("Batch size:", args.batch_size)
     print("Sequence length:", SEQUENCE_LENGTH)
     print("Learning rate:", args.learning_rate)
-    print("Early stopping patience:", args.patience)
+   # print("Early stopping patience:", args.patience)
 
     best_val = float("inf")
     best_epoch = 0
@@ -256,11 +256,11 @@ def main():
         if improved:
             print("  Best checkpoint updated.")
         else:
-            print(f"  No validation improvement: {no_improvement}/{args.patience}")
+           print(f"  No validation improvement for {no_improvement} epoch(s). Continuing training.")
 
-        if no_improvement >= args.patience:
-            print("Early stopping.")
-            break
+        #if no_improvement >= args.patience:
+           # print("Early stopping.")
+            #break
 
     elapsed = time.perf_counter() - started
 
