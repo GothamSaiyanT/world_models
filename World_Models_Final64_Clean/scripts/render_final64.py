@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from config_final64 import (
+    ADAPTIVE_MOTION_THRESHOLD,
     ADAPTIVE_THRESHOLD,
     DATA_FOLDER,
     EVALUATION_HORIZON,
@@ -86,6 +87,11 @@ def main():
     parser.add_argument("--fps", type=int, default=8)
     parser.add_argument("--fixed-interval", type=int, default=FIXED_INTERVAL)
     parser.add_argument("--adaptive-threshold", type=float, default=ADAPTIVE_THRESHOLD)
+    parser.add_argument(
+        "--adaptive-motion-threshold",
+        type=float,
+        default=ADAPTIVE_MOTION_THRESHOLD,
+    )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     args = parser.parse_args()
 
@@ -109,7 +115,7 @@ def main():
     action_sequence = actions[args.start:args.start + args.horizon]
 
     results = {}
-    for strategy in ("baseline", "fixed", "adaptive"):
+    for strategy in ("baseline", "fixed", "adaptive", "adaptive_motion"):
         results[strategy] = generate_rollout(
             model=model,
             real_frames=real,
@@ -117,6 +123,7 @@ def main():
             strategy=strategy,
             fixed_interval=args.fixed_interval,
             adaptive_threshold=args.adaptive_threshold,
+            adaptive_motion_threshold=args.adaptive_motion_threshold,
             device=device,
         )
 
@@ -127,7 +134,7 @@ def main():
     scale = 4
     sample_panel = to_panel(real[0], "Ground Truth", 0, scale=scale)
     panel_h, panel_w = sample_panel.shape[:2]
-    video_size = (panel_w * 2, panel_h * 2)
+    video_size = (panel_w * 3, panel_h * 2)
 
     writer = cv2.VideoWriter(
         str(output_path),
@@ -160,9 +167,17 @@ def main():
             correction=(frame_index in results["adaptive"]["corrections"]),
             scale=scale,
         )
+        adaptive_motion = to_panel(
+            results["adaptive_motion"]["prediction"][frame_index],
+            "Adaptive (motion)",
+            frame_index,
+            correction=(frame_index in results["adaptive_motion"]["corrections"]),
+            scale=scale,
+        )
+        blank = np.zeros_like(gt)
 
-        top = np.hstack([gt, baseline])
-        bottom = np.hstack([fixed, adaptive])
+        top = np.hstack([gt, baseline, fixed])
+        bottom = np.hstack([adaptive, adaptive_motion, blank])
         frame = np.vstack([top, bottom])
         writer.write(frame)
 
@@ -172,6 +187,7 @@ def main():
     print("Best validation loss:", best_loss)
     print("Fixed effective corrections:", results["fixed"]["corrections"])
     print("Adaptive effective corrections:", results["adaptive"]["corrections"])
+    print("Adaptive (motion) effective corrections:", results["adaptive_motion"]["corrections"])
     print("Saved video:", output_path)
 
 

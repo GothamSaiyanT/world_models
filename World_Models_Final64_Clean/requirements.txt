@@ -7,6 +7,6 @@ scikit-image
 plotly
 streamlit
 opencv-python-headless
-gymnasium[atari]
+"gymnasium[atari]"
 ale-py
 pytest

@@ -8,6 +8,7 @@ import torch
 from skimage.metrics import structural_similarity
 
 from config_final64 import (
+    ADAPTIVE_MOTION_THRESHOLD,
     ADAPTIVE_THRESHOLD,
     DATA_FOLDER,
     EVALUATION_HORIZON,
@@ -30,7 +31,7 @@ from utils.experiment_logging import environment_info, write_json
 from utils.rollout_final64 import generate_rollout
 
 
-PIPELINES = ("baseline", "fixed", "adaptive")
+PIPELINES = ("baseline", "fixed", "adaptive", "adaptive_motion")
 
 
 def choose_device(requested):
@@ -130,14 +131,27 @@ def evaluate_window(start, pipeline, result):
     return window_row, frame_rows
 
 
-def make_report(summary_df, checkpoint_epoch, checkpoint_loss, starts, horizon, interval, threshold):
+def make_report(
+    summary_df,
+    checkpoint_epoch,
+    checkpoint_loss,
+    starts,
+    horizon,
+    interval,
+    threshold,
+    motion_threshold,
+):
     by_pipeline = summary_df.set_index("pipeline")
     baseline = by_pipeline.loc["baseline"]
     fixed = by_pipeline.loc["fixed"]
     adaptive = by_pipeline.loc["adaptive"]
+    adaptive_motion = by_pipeline.loc["adaptive_motion"]
 
     fixed_mse_reduction = 100.0 * (baseline.mean_mse - fixed.mean_mse) / baseline.mean_mse
     adaptive_mse_reduction = 100.0 * (baseline.mean_mse - adaptive.mean_mse) / baseline.mean_mse
+    adaptive_motion_mse_reduction = (
+        100.0 * (baseline.mean_mse - adaptive_motion.mean_mse) / baseline.mean_mse
+    )
 
     return f"""# Final64 experiment summary
 
@@ -149,8 +163,9 @@ def make_report(summary_df, checkpoint_epoch, checkpoint_loss, starts, horizon, 
 - Evaluation starts: {list(starts)}
 - Horizon: {horizon} predicted frames per window
 - Fixed Interval correction: every {interval} frames, excluding a correction after the final prediction because it cannot affect a future step
-- Adaptive correction threshold: MSE > {threshold}
-- All three rollout strategies use the same learned world model.
+- Adaptive correction threshold: whole-frame MSE > {threshold}
+- Adaptive (motion) correction threshold: motion-weighted error > {motion_threshold}
+- All four rollout strategies use the same learned world model.
 
 ## Five-window mean results
 
@@ -159,16 +174,17 @@ def make_report(summary_df, checkpoint_epoch, checkpoint_loss, starts, horizon, 
 | Baseline | {baseline.mean_mse:.6f} | {baseline.mean_mae:.6f} | {baseline.mean_psnr:.3f} | {baseline.mean_ssim:.4f} | {baseline.mean_motion_ratio:.3f}x | {baseline.mean_corrections:.2f} |
 | Fixed Interval | {fixed.mean_mse:.6f} | {fixed.mean_mae:.6f} | {fixed.mean_psnr:.3f} | {fixed.mean_ssim:.4f} | {fixed.mean_motion_ratio:.3f}x | {fixed.mean_corrections:.2f} |
 | Adaptive | {adaptive.mean_mse:.6f} | {adaptive.mean_mae:.6f} | {adaptive.mean_psnr:.3f} | {adaptive.mean_ssim:.4f} | {adaptive.mean_motion_ratio:.3f}x | {adaptive.mean_corrections:.2f} |
+| Adaptive (motion) | {adaptive_motion.mean_mse:.6f} | {adaptive_motion.mean_mae:.6f} | {adaptive_motion.mean_psnr:.3f} | {adaptive_motion.mean_ssim:.4f} | {adaptive_motion.mean_motion_ratio:.3f}x | {adaptive_motion.mean_corrections:.2f} |
 
-Relative to the Baseline, Fixed Interval reduced mean MSE by {fixed_mse_reduction:.1f}% and Adaptive reduced mean MSE by {adaptive_mse_reduction:.1f}% over these five frozen test windows.
+Relative to the Baseline: Fixed Interval reduced mean MSE by {fixed_mse_reduction:.1f}%, Adaptive by {adaptive_mse_reduction:.1f}%, and Adaptive (motion) by {adaptive_motion_mse_reduction:.1f}%, over these five frozen test windows.
 
 ## Interpretation to use in the paper
 
-The experiment isolates rollout correction policy because the learned predictor, dataset, action sequence and evaluation windows are held constant. Baseline runs open-loop. Fixed Interval periodically re-anchors the next model input with an available observation. Adaptive re-anchors only when current prediction MSE exceeds the frozen threshold. A correction does not replace the prediction that triggered it; that prediction remains in the scored rollout.
+The experiment isolates rollout correction policy because the learned predictor, dataset, action sequence and evaluation windows are held constant. Baseline runs open-loop. Fixed Interval periodically re-anchors the next model input with an available observation. Adaptive re-anchors only when current prediction whole-frame MSE exceeds the frozen threshold. Adaptive (motion) re-anchors only when a motion-weighted error (the same weighting used during training, which emphasises pixels where the real scene changed) exceeds its own threshold. A correction does not replace the prediction that triggered it; that prediction remains in the scored rollout.
 
 ## Limitation
 
-A correction strategy can reduce accumulated rollout error without correcting every one-step visual artefact. Motion ratio values above 1.0 indicate that the learned dynamics still exaggerate frame-to-frame change. Adaptive correction also assumes an observation is available so that current prediction error can be measured.
+A correction strategy can reduce accumulated rollout error without correcting every one-step visual artefact. Motion ratio values above 1.0 indicate that the learned dynamics still exaggerate frame-to-frame change. Whole-frame-MSE-based adaptive correction assumes an observation is available so that current prediction error can be measured, but because the ball and paddle occupy a small fraction of the frame, a whole-frame error can stay below threshold even when they are completely mispredicted; this is the motivation for the motion-weighted variant.
 """
 
 
@@ -178,6 +194,11 @@ def main():
     parser.add_argument("--horizon", type=int, default=EVALUATION_HORIZON)
     parser.add_argument("--fixed-interval", type=int, default=FIXED_INTERVAL)
     parser.add_argument("--adaptive-threshold", type=float, default=ADAPTIVE_THRESHOLD)
+    parser.add_argument(
+        "--adaptive-motion-threshold",
+        type=float,
+        default=ADAPTIVE_MOTION_THRESHOLD,
+    )
     parser.add_argument(
         "--starts",
         type=int,
@@ -227,6 +248,7 @@ def main():
                 strategy=pipeline,
                 fixed_interval=args.fixed_interval,
                 adaptive_threshold=args.adaptive_threshold,
+                adaptive_motion_threshold=args.adaptive_motion_threshold,
                 device=device,
             )
 
@@ -281,6 +303,7 @@ def main():
             "horizon": args.horizon,
             "fixed_interval": args.fixed_interval,
             "adaptive_threshold": args.adaptive_threshold,
+            "adaptive_motion_threshold": args.adaptive_motion_threshold,
             "effective_correction_counting": "final-frame re-anchor is not counted because no future prediction follows",
             "seed_frame_scored": False,
         },
@@ -296,6 +319,7 @@ def main():
         args.horizon,
         args.fixed_interval,
         args.adaptive_threshold,
+        args.adaptive_motion_threshold,
     )
     Path(FINAL_REPORT_MD).write_text(report, encoding="utf-8")
 
