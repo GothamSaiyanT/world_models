@@ -36,19 +36,36 @@ from training.trainer import clip_gradient_norm
 from utils.experiment_logging import environment_info, write_json
 
 
+# ============================================================
+# DEVICE
+# ============================================================
+
 def choose_device(requested):
+
     if requested == "auto":
         return torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
+            "cuda"
+            if torch.cuda.is_available()
+            else "cpu"
         )
 
-    if requested == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA requested but not available.")
+    if (
+        requested == "cuda"
+        and not torch.cuda.is_available()
+    ):
+        raise RuntimeError(
+            "CUDA requested but not available."
+        )
 
     return torch.device(requested)
 
 
+# ============================================================
+# REPRODUCIBILITY
+# ============================================================
+
 def set_seed(seed):
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -56,6 +73,10 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+
+# ============================================================
+# TRAIN / VALIDATION EPOCH
+# ============================================================
 
 def run_epoch(
     model,
@@ -68,17 +89,32 @@ def run_epoch(
     """
     Run one complete training or validation epoch.
 
-    Important:
-    The model is trained autoregressively.
+    FINAL BETA TRAINING STRATEGY:
+    --------------------------------
+    Teacher-forced sequential training.
 
-    At timestep 0:
-        input = real frame
+    At every timestep the model receives the REAL current frame.
 
-    At later timesteps:
-        input = model's previous prediction
+        real frame[t]
+              |
+              v
+           Encoder
+              |
+              v
+           Dynamics <--- previous hidden state
+              |
+              v
+           Decoder
+              |
+              v
+        prediction[t+1]
 
-    This makes training closer to rollout/evaluation, where the model
-    must continue predicting from its own generated frames.
+    The important part is that the GRU hidden state is NOT reset
+    between timesteps.
+
+    Therefore the model still learns temporal information across
+    the complete sequence while avoiding prediction artifacts being
+    fed back into the encoder during training.
     """
 
     if training:
@@ -96,7 +132,12 @@ def run_epoch(
     )
 
     with context:
+
         for frames, actions in loader:
+
+            # ----------------------------------------------------
+            # Move batch to selected device
+            # ----------------------------------------------------
 
             frames = frames.to(
                 device=device,
@@ -112,6 +153,14 @@ def run_epoch(
 
             batch_size = frames.shape[0]
 
+            # ----------------------------------------------------
+            # Initialise recurrent hidden state
+            #
+            # IMPORTANT:
+            # This happens ONCE per sequence/batch.
+            # It is NOT reset inside the timestep loop.
+            # ----------------------------------------------------
+
             hidden = model.init_hidden(
                 batch_size=batch_size,
                 device=device,
@@ -126,69 +175,78 @@ def run_epoch(
                 dtype=torch.float32,
             )
 
-            # ---------------------------------------------------------
-            # AUTOREGRESSIVE INPUT
-            # ---------------------------------------------------------
-            # Only the first frame is supplied from the real sequence.
-            #
-            # After the first prediction, the prediction itself becomes
-            # the next model input.
-            #
-            # This is intentionally different from teacher forcing.
-            # ---------------------------------------------------------
+            # ----------------------------------------------------
+            # TEACHER-FORCED SEQUENTIAL TRAINING
+            # ----------------------------------------------------
 
-            current_input = frames[:, 0]
+            for timestep in range(
+                actions.shape[1]
+            ):
 
-            for timestep in range(actions.shape[1]):
+                # Real frame at the current timestep.
+                current_frame = frames[
+                    :,
+                    timestep
+                ]
 
-                # Real frame corresponding to this timestep.
-                # Used for calculating motion in the loss.
-                real_current_frame = frames[:, timestep]
+                # Real frame immediately after the action.
+                target_frame = frames[
+                    :,
+                    timestep + 1
+                ]
 
-                # Ground-truth next frame.
-                target_frame = frames[:, timestep + 1]
+                # Action connecting:
+                #
+                # current_frame -> target_frame
+                #
+                current_action = actions[
+                    :,
+                    timestep
+                ]
 
-                # Action taken between current and target frame.
-                current_action = actions[:, timestep]
+                # ------------------------------------------------
+                # Predict next frame.
+                #
+                # The image input is the REAL current frame.
+                #
+                # However, hidden comes from the previous
+                # timestep and therefore carries temporal
+                # information through the sequence.
+                # ------------------------------------------------
 
-                # Predict the next frame using the current autoregressive
-                # input and the corresponding action.
                 prediction, hidden = model(
-                    current_input,
+                    current_frame,
                     current_action,
                     hidden,
                 )
 
-                # Compare prediction against the real next frame.
-                #
-                # real_current_frame remains the reference for detecting
-                # which pixels actually moved.
+                # ------------------------------------------------
+                # Motion-weighted reconstruction loss
+                # ------------------------------------------------
+
                 step_loss = criterion(
                     prediction=prediction,
                     target=target_frame,
-                    current_frame=real_current_frame,
+                    current_frame=current_frame,
                 )
 
-                sequence_loss = sequence_loss + step_loss
+                sequence_loss = (
+                    sequence_loss
+                    + step_loss
+                )
 
-                # -----------------------------------------------------
-                # CRITICAL CHANGE
-                # -----------------------------------------------------
-                # Feed the prediction back into the model on the next
-                # timestep instead of supplying the next real frame.
-                #
-                # detach() prevents backpropagation through the pixels
-                # of all previous predictions while the GRU hidden state
-                # still carries temporal information through the sequence.
-                # -----------------------------------------------------
-
-                current_input = prediction.detach()
-
+            # Average loss across all timesteps.
             sequence_loss = (
-                sequence_loss / actions.shape[1]
+                sequence_loss
+                / actions.shape[1]
             )
 
+            # ----------------------------------------------------
+            # Backpropagation
+            # ----------------------------------------------------
+
             if training:
+
                 sequence_loss.backward()
 
                 clip_gradient_norm(
@@ -209,11 +267,24 @@ def run_epoch(
             "DataLoader produced no batches."
         )
 
-    return total_loss / batches
+    return (
+        total_loss
+        / batches
+    )
 
 
-def save_history(history, result_folder):
-    result_folder = Path(result_folder)
+# ============================================================
+# SAVE TRAINING HISTORY
+# ============================================================
+
+def save_history(
+    history,
+    result_folder
+):
+
+    result_folder = Path(
+        result_folder
+    )
 
     result_folder.mkdir(
         parents=True,
@@ -221,7 +292,7 @@ def save_history(history, result_folder):
     )
 
     # ---------------------------------------------------------
-    # CSV history
+    # CSV
     # ---------------------------------------------------------
 
     csv_path = (
@@ -249,7 +320,7 @@ def save_history(history, result_folder):
         writer.writerows(history)
 
     # ---------------------------------------------------------
-    # JSON history
+    # JSON
     # ---------------------------------------------------------
 
     json_path = (
@@ -307,7 +378,7 @@ def save_history(history, result_folder):
     )
 
     plt.title(
-        "Final64 Autoregressive Training History"
+        "Final64 Teacher-Forced Sequential Training History"
     )
 
     plt.legend()
@@ -323,6 +394,10 @@ def save_history(history, result_folder):
 
     plt.close(fig)
 
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
 
@@ -375,19 +450,21 @@ def main():
 
     args = parser.parse_args()
 
-    # ---------------------------------------------------------
+    # ========================================================
     # Reproducibility
-    # ---------------------------------------------------------
+    # ========================================================
 
-    set_seed(args.seed)
+    set_seed(
+        args.seed
+    )
 
     device = choose_device(
         args.device
     )
 
-    # ---------------------------------------------------------
+    # ========================================================
     # Directories
-    # ---------------------------------------------------------
+    # ========================================================
 
     data_folder = Path(
         DATA_FOLDER
@@ -411,9 +488,9 @@ def main():
         exist_ok=True,
     )
 
-    # ---------------------------------------------------------
+    # ========================================================
     # Prevent accidental overwrite
-    # ---------------------------------------------------------
+    # ========================================================
 
     if (
         MODEL_PATH.exists()
@@ -422,13 +499,16 @@ def main():
 
         raise FileExistsError(
             f"{MODEL_PATH} already exists. "
-            "Use --overwrite only for an intentional "
-            "fresh retraining."
+            "Use --overwrite only for an "
+            "intentional fresh retraining."
         )
 
-    # ---------------------------------------------------------
-    # Dataset
-    # ---------------------------------------------------------
+    # ========================================================
+    # DATASET
+    #
+    # SequenceRangeDataset keeps the episode-safe sequence
+    # filtering introduced in Final64.
+    # ========================================================
 
     frame_count = len(
         np.load(
@@ -451,9 +531,9 @@ def main():
         sequence_length=SEQUENCE_LENGTH,
     )
 
-    # ---------------------------------------------------------
+    # ========================================================
     # Deterministic training shuffle
-    # ---------------------------------------------------------
+    # ========================================================
 
     train_generator = (
         torch.Generator()
@@ -484,9 +564,31 @@ def main():
         ),
     )
 
-    # ---------------------------------------------------------
-    # Model
-    # ---------------------------------------------------------
+    # ========================================================
+    # MODEL
+    #
+    # FINAL ARCHITECTURE:
+    #
+    # Encoder:
+    #   64x64 grayscale
+    #       -> Conv32
+    #       -> Conv64
+    #       -> Conv128
+    #       -> Linear
+    #       -> latent 128
+    #
+    # Dynamics:
+    #   latent 128
+    #       + action embedding 32
+    #       -> GRU hidden 128
+    #
+    # Decoder:
+    #   hidden 128
+    #       -> 512
+    #       -> 2048
+    #       -> 4096
+    #       -> 64x64
+    # ========================================================
 
     model = WorldModel(
         latent_size=LATENT_SIZE,
@@ -494,9 +596,11 @@ def main():
         image_size=IMAGE_SIZE,
     ).to(device)
 
-    # ---------------------------------------------------------
-    # Loss
-    # ---------------------------------------------------------
+    # ========================================================
+    # LOSS
+    #
+    # Keep the known baseline settings.
+    # ========================================================
 
     criterion = (
         StableMotionWeightedMSELoss(
@@ -505,9 +609,9 @@ def main():
         )
     )
 
-    # ---------------------------------------------------------
-    # Optimizer
-    # ---------------------------------------------------------
+    # ========================================================
+    # OPTIMIZER
+    # ========================================================
 
     optimizer = Adam(
         list(model.parameters()),
@@ -519,12 +623,16 @@ def main():
         for p in model.parameters()
     )
 
-    # ---------------------------------------------------------
-    # Experiment information
-    # ---------------------------------------------------------
+    # ========================================================
+    # EXPERIMENT INFORMATION
+    # ========================================================
 
     print("=" * 60)
-    print("FINAL64 AUTOREGRESSIVE TRAINING")
+
+    print(
+        "FINAL64 TEACHER-FORCED SEQUENTIAL TRAINING"
+    )
+
     print("=" * 60)
 
     print(
@@ -540,6 +648,16 @@ def main():
     print(
         "Validation frames:",
         frame_count - TRAIN_END,
+    )
+
+    print(
+        "Train valid sequences:",
+        len(train_dataset),
+    )
+
+    print(
+        "Validation valid sequences:",
+        len(val_dataset),
     )
 
     print(
@@ -577,13 +695,33 @@ def main():
     )
 
     print(
+        "Motion weight:",
+        MOTION_WEIGHT,
+    )
+
+    print(
+        "Motion threshold:",
+        MOTION_THRESHOLD,
+    )
+
+    print(
         "Maximum epochs:",
         args.epochs,
     )
 
     print(
         "Training mode:",
-        "AUTOREGRESSIVE",
+        "TEACHER-FORCED SEQUENTIAL",
+    )
+
+    print(
+        "Episode-safe sequences:",
+        "ENABLED",
+    )
+
+    print(
+        "Best checkpoint criterion:",
+        "VALIDATION LOSS",
     )
 
     print(
@@ -593,9 +731,9 @@ def main():
 
     print("=" * 60)
 
-    # ---------------------------------------------------------
-    # Training state
-    # ---------------------------------------------------------
+    # ========================================================
+    # TRAINING STATE
+    # ========================================================
 
     best_val = float("inf")
     best_epoch = 0
@@ -604,14 +742,14 @@ def main():
 
     started = time.perf_counter()
 
-    # ---------------------------------------------------------
-    # FULL TRAINING LOOP
-    # ---------------------------------------------------------
+    # ========================================================
+    # TRAINING LOOP
     #
-    # There is deliberately NO patience condition here.
+    # There is no early stopping.
     #
-    # If --epochs 70 is supplied, all 70 epochs run.
-    # ---------------------------------------------------------
+    # However, only the model with the lowest validation loss
+    # is retained as best_world_model.npz.
+    # ========================================================
 
     for epoch in range(
         1,
@@ -636,9 +774,9 @@ def main():
             training=False,
         )
 
-        # -----------------------------------------------------
-        # Best checkpoint
-        # -----------------------------------------------------
+        # ----------------------------------------------------
+        # Best validation checkpoint
+        # ----------------------------------------------------
 
         improved = (
             val_loss < best_val
@@ -655,9 +793,9 @@ def main():
                 best_loss=best_val,
             )
 
-        # -----------------------------------------------------
+        # ----------------------------------------------------
         # History
-        # -----------------------------------------------------
+        # ----------------------------------------------------
 
         history.append(
             {
@@ -673,9 +811,9 @@ def main():
             result_folder,
         )
 
-        # -----------------------------------------------------
+        # ----------------------------------------------------
         # Console output
-        # -----------------------------------------------------
+        # ----------------------------------------------------
 
         print(
             f"Epoch {epoch}/{args.epochs} | "
@@ -696,18 +834,18 @@ def main():
                 "Continuing training."
             )
 
-    # ---------------------------------------------------------
-    # Finished
-    # ---------------------------------------------------------
+    # ========================================================
+    # FINISHED
+    # ========================================================
 
     elapsed = (
         time.perf_counter()
         - started
     )
 
-    # ---------------------------------------------------------
-    # Metadata
-    # ---------------------------------------------------------
+    # ========================================================
+    # METADATA
+    # ========================================================
 
     metadata = {
 
@@ -743,6 +881,12 @@ def main():
             "frame_count":
                 frame_count,
 
+            "train_valid_sequences":
+                len(train_dataset),
+
+            "validation_valid_sequences":
+                len(val_dataset),
+
             "sequence_length":
                 SEQUENCE_LENGTH,
 
@@ -765,7 +909,13 @@ def main():
                 False,
 
             "training_mode":
-                "autoregressive",
+                "teacher_forced_sequential",
+
+            "episode_safe_sequences":
+                True,
+
+            "checkpoint_selection":
+                "lowest_validation_loss",
 
             "best_epoch":
                 best_epoch,
@@ -791,13 +941,18 @@ def main():
         metadata,
     )
 
-    # ---------------------------------------------------------
-    # Final summary
-    # ---------------------------------------------------------
+    # ========================================================
+    # FINAL SUMMARY
+    # ========================================================
 
     print()
+
     print("=" * 60)
-    print("TRAINING COMPLETE")
+
+    print(
+        "TRAINING COMPLETE"
+    )
+
     print("=" * 60)
 
     print(
