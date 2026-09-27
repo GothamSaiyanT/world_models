@@ -44,9 +44,18 @@ MOTION_THRESHOLD = 0.05
 # bright blobs by connected-component size, which is what actually tells the
 # ball apart from the paddle and any brick block — position-based
 # exclusion isn't reliable, since bricks can be bright too).
-# Sanity-check these against real frames with scripts/inspect_ball_mask.py
-# before a full training run.
-BALL_WEIGHT = 40.0
+#
+# BALL_WEIGHT was 40.0 for the previous run. That produced a model that
+# stopped losing the ball entirely, but it also learned to draw a faint
+# ball-sized blob at a nearly fixed location regardless of the true game
+# state — a decoy that lowers average loss without real tracking, because
+# nothing in the loss penalizes a wrong-location guess any more than an
+# ordinary background pixel. Dropping the weight to 12.0 reduces the payoff
+# for that kind of guessing relative to background accuracy. If the decoy
+# persists at 12.0, that's a sign the issue needs a false-positive penalty
+# (weighting predicted-but-wrong ball pixels too) rather than further
+# lowering this number.
+BALL_WEIGHT = 12.0
 BALL_BRIGHTNESS_THRESHOLD = 0.3
 BALL_MIN_AREA_PX = 1
 BALL_MAX_AREA_PX = 12
