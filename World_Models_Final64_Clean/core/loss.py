@@ -155,6 +155,18 @@ class BallAwareMotionWeightedMSELoss:
     meaningful gradient signal even in the (rare) frames where it isn't
     classified as "moving", and regardless of how many other pixels are
     moving in that frame.
+
+    ball_false_positive_weight closes a gap the above doesn't: nothing so
+    far penalizes the model for drawing a ball-sized blob somewhere the
+    ball ISN'T. Since a false guess there only ever cost the same as an
+    ordinary background pixel, the cheapest way to lower the loss was to
+    draw a low-confidence blob at whatever position was most often close
+    to correct across the training set — a fixed decoy, not real tracking
+    (this is what showed up in practice: the same blob, same location,
+    regardless of the true game state). Detecting ball-sized blobs in the
+    PREDICTION too, and adding extra weight wherever one appears with no
+    matching real ball there, makes that guessing strategy costly instead
+    of free.
     """
 
     def __init__(
@@ -165,6 +177,7 @@ class BallAwareMotionWeightedMSELoss:
         ball_brightness_threshold=0.3,
         ball_min_area=1,
         ball_max_area=12,
+        ball_false_positive_weight=20.0,
     ):
 
         self.motion_weight = motion_weight
@@ -173,6 +186,7 @@ class BallAwareMotionWeightedMSELoss:
         self.ball_brightness_threshold = ball_brightness_threshold
         self.ball_min_area = ball_min_area
         self.ball_max_area = ball_max_area
+        self.ball_false_positive_weight = ball_false_positive_weight
 
     def forward(
         self,
@@ -193,10 +207,21 @@ class BallAwareMotionWeightedMSELoss:
             max_ball_area=self.ball_max_area,
         ).to(prediction.dtype)
 
+        predicted_ball_mask = detect_ball_mask(
+            prediction,
+            brightness_threshold=self.ball_brightness_threshold,
+            min_ball_area=self.ball_min_area,
+            max_ball_area=self.ball_max_area,
+        ).to(prediction.dtype)
+
+        # A predicted ball-sized blob that doesn't overlap a real one.
+        false_positive_mask = predicted_ball_mask * (1.0 - ball_mask)
+
         pixel_weights = (
             1.0
             + self.motion_weight * motion_mask
             + self.ball_weight * ball_mask
+            + self.ball_false_positive_weight * false_positive_mask
         )
 
         weighted_error = pixel_weights * squared_error

@@ -3,6 +3,7 @@ import torch
 
 from config_final64 import (
     BALL_BRIGHTNESS_THRESHOLD,
+    BALL_FALSE_POSITIVE_WEIGHT,
     BALL_MAX_AREA_PX,
     BALL_MIN_AREA_PX,
     BALL_WEIGHT,
@@ -47,6 +48,7 @@ def main():
         ball_weight=BALL_WEIGHT,
         ball_min_area=BALL_MIN_AREA_PX,
         ball_max_area=BALL_MAX_AREA_PX,
+        ball_false_positive_weight=BALL_FALSE_POSITIVE_WEIGHT,
         ball_brightness_threshold=BALL_BRIGHTNESS_THRESHOLD,
     )
 

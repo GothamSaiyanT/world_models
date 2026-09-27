@@ -28,14 +28,14 @@ EXPECTED_ACTION_MEANINGS = ("NOOP", "FIRE", "RIGHT", "LEFT")
 # Shared learned predictor.
 LATENT_SIZE = 128
 HIDDEN_SIZE = 128
-SEQUENCE_LENGTH = 24
+SEQUENCE_LENGTH = 16
 TRAIN_END = 8_000
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001
 MAX_EPOCHS = 50
 EARLY_STOPPING_PATIENCE = 10
 MOTION_WEIGHT = 8.0
-MOTION_THRESHOLD = 0.03
+MOTION_THRESHOLD = 0.05
 # Only ~1-2% of pixels are typically "moving" between two consecutive real
 # frames (mostly the paddle, since it's much bigger than the ball) — so even
 # MOTION_WEIGHT above barely shifts the loss towards them. BALL_WEIGHT below
@@ -59,6 +59,12 @@ BALL_WEIGHT = 12.0
 BALL_BRIGHTNESS_THRESHOLD = 0.3
 BALL_MIN_AREA_PX = 1
 BALL_MAX_AREA_PX = 12
+# Extra weight where the model draws a ball-sized blob but the real ball
+# isn't there. Without this, a wrong-location guess costs the same as any
+# background pixel, and the model can lower the loss by drawing the same
+# blob everywhere (the "decoy" you saw) instead of actually tracking the
+# ball. This makes that specific cheap trick expensive.
+BALL_FALSE_POSITIVE_WEIGHT = 20.0
 
 # Frozen final evaluation protocol.
 EVALUATION_STARTS = (0, 500, 1000, 2000, 3000)
