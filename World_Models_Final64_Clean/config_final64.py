@@ -34,51 +34,14 @@ BATCH_SIZE = 32
 LEARNING_RATE = 0.001
 MAX_EPOCHS = 50
 EARLY_STOPPING_PATIENCE = 10
-MOTION_WEIGHT = 8.0
+MOTION_WEIGHT = 2.0
 MOTION_THRESHOLD = 0.05
-# Only ~1-2% of pixels are typically "moving" between two consecutive real
-# frames (mostly the paddle, since it's much bigger than the ball) — so even
-# MOTION_WEIGHT above barely shifts the loss towards them. BALL_WEIGHT below
-# gives the ball (specifically) its own much larger share, via a size-based
-# heuristic (see core.loss.detect_ball_mask: it isolates small isolated
-# bright blobs by connected-component size, which is what actually tells the
-# ball apart from the paddle and any brick block — position-based
-# exclusion isn't reliable, since bricks can be bright too).
-#
-# BALL_WEIGHT was 40.0 for the previous run. That produced a model that
-# stopped losing the ball entirely, but it also learned to draw a faint
-# ball-sized blob at a nearly fixed location regardless of the true game
-# state — a decoy that lowers average loss without real tracking, because
-# nothing in the loss penalizes a wrong-location guess any more than an
-# ordinary background pixel. Dropping the weight to 12.0 reduces the payoff
-# for that kind of guessing relative to background accuracy. If the decoy
-# persists at 12.0, that's a sign the issue needs a false-positive penalty
-# (weighting predicted-but-wrong ball pixels too) rather than further
-# lowering this number.
-BALL_WEIGHT = 12.0
-BALL_BRIGHTNESS_THRESHOLD = 0.3
-BALL_MIN_AREA_PX = 1
-BALL_MAX_AREA_PX = 12
-# Extra weight where the model draws a ball-sized blob but the real ball
-# isn't there. Without this, a wrong-location guess costs the same as any
-# background pixel, and the model can lower the loss by drawing the same
-# blob everywhere (the "decoy" you saw) instead of actually tracking the
-# ball. This makes that specific cheap trick expensive.
-BALL_FALSE_POSITIVE_WEIGHT = 20.0
 
 # Frozen final evaluation protocol.
 EVALUATION_STARTS = (0, 500, 1000, 2000, 3000)
 EVALUATION_HORIZON = 100
 FIXED_INTERVAL = 10
 ADAPTIVE_THRESHOLD = 0.0005
-# Trigger for the "adaptive_motion" strategy: same motion-weighting scheme as
-# the training loss (MOTION_WEIGHT / MOTION_THRESHOLD above), applied to the
-# rollout correction decision instead of plain whole-frame MSE. This starting
-# value has NOT been calibrated against real rollout data yet — before
-# trusting it, run a rollout and look at the "diagnostics" list returned by
-# generate_rollout to see the actual distribution of motion_weighted_error,
-# then adjust this so it fires when the ball/paddle are visibly wrong.
-ADAPTIVE_MOTION_THRESHOLD = 0.001
 
 MODEL_PATH = MODEL_FOLDER / "best_world_model.npz"
 TRAINING_HISTORY_CSV = RESULT_FOLDER / "training_history.csv"
