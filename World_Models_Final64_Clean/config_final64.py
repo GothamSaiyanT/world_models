@@ -28,14 +28,14 @@ EXPECTED_ACTION_MEANINGS = ("NOOP", "FIRE", "RIGHT", "LEFT")
 # Shared learned predictor.
 LATENT_SIZE = 128
 HIDDEN_SIZE = 128
-SEQUENCE_LENGTH = 16
+SEQUENCE_LENGTH = 24
 TRAIN_END = 8_000
 BATCH_SIZE = 32
 LEARNING_RATE = 0.001
 MAX_EPOCHS = 50
 EARLY_STOPPING_PATIENCE = 10
 MOTION_WEIGHT = 8.0
-MOTION_THRESHOLD = 0.05
+MOTION_THRESHOLD = 0.03
 # Only ~1-2% of pixels are typically "moving" between two consecutive real
 # frames (mostly the paddle, since it's much bigger than the ball) — so even
 # MOTION_WEIGHT above barely shifts the loss towards them. BALL_WEIGHT below
