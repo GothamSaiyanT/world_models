@@ -9,6 +9,9 @@ def main() -> None:
         data_config=DataConfig(
             folder="data",
             sequence_length=16,
+            # Hold back 20% of the recording (the end of it) to check
+            # the model on data it has never trained on. 0 turns it off.
+            validation_fraction=0.2,
         ),
         model_config=ModelConfig(
             latent_size=128,
@@ -28,7 +31,7 @@ def main() -> None:
             fixed_interval=10,
         ),
         training_config=TrainingConfig(
-            epochs=20,
+            epochs=70,
             learning_rate=0.001,
             batch_size=32,
             num_workers=2,
