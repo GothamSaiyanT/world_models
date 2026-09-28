@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset
 
 from config import (
     DataConfig,
@@ -13,14 +13,31 @@ from config import (
     TrainingConfig,
     serialise_configs,
 )
-from core_nn.correction import CorrectionStrategy
-from core_nn.drift import DriftDetector
-from core_nn.world_model import WorldModel
-from training.self_correcting_trainer import EpochResult, SelfCorrectingTrainer
+
+from core_nn.correction import (
+    CorrectionStrategy,
+)
+
+from core_nn.drift import (
+    DriftDetector,
+)
+
+from core_nn.world_model import (
+    WorldModel,
+)
+
+from training.self_correcting_trainer import (
+    EpochResult,
+    ValidationResult,
+    SelfCorrectingTrainer,
+)
 
 
 class SelfCorrectingPipeline(ABC):
-    """Template method for setup, training, reporting, and checkpointing."""
+    """
+    Shared pipeline for adaptive and
+    fixed-interval correction.
+    """
 
     pipeline_name: str
     model_filename: str
@@ -35,120 +52,590 @@ class SelfCorrectingPipeline(ABC):
         training_config: TrainingConfig,
         dataset: Dataset | None = None,
     ) -> None:
-        self.data_config = data_config
-        self.model_config = model_config
-        self.drift_config = drift_config
-        self.training_config = training_config
 
-        self.dataset = dataset if dataset is not None else self._build_dataset()
-        self.model = WorldModel(model_config)
-        self.drift_detector = DriftDetector(metric=drift_config.metric)
-        self.corrector = self.build_corrector()
+        self.data_config = (
+            data_config
+        )
+
+        self.model_config = (
+            model_config
+        )
+
+        self.drift_config = (
+            drift_config
+        )
+
+        self.training_config = (
+            training_config
+        )
+
+        # -----------------------------------------
+        # LOAD COMPLETE DATASET
+        # -----------------------------------------
+
+        self.dataset = (
+            dataset
+            if dataset is not None
+            else self._build_dataset()
+        )
+
+        # -----------------------------------------
+        # CONTIGUOUS 80/20 SPLIT
+        #
+        # For 10,000 frames and seq_len=16:
+        #
+        # train starts: 0 -> 7983
+        # validation starts: 8000 -> end
+        #
+        # This intentionally leaves a 16-start
+        # gap so training sequences never overlap
+        # validation frames.
+        # -----------------------------------------
+
+        (
+            self.train_dataset,
+            self.validation_dataset,
+        ) = self._split_dataset(
+            self.dataset
+        )
+
+        print(
+            "Training sequences:",
+            len(self.train_dataset),
+        )
+
+        print(
+            "Validation sequences:",
+            len(
+                self.validation_dataset
+            ),
+        )
+
+        # -----------------------------------------
+        # MODEL
+        # -----------------------------------------
+
+        self.model = WorldModel(
+            model_config
+        )
+
+        self.drift_detector = (
+            DriftDetector(
+                metric=(
+                    drift_config.metric
+                )
+            )
+        )
+
+        self.corrector = (
+            self.build_corrector()
+        )
+
         self.validate_pipeline()
 
-        self.trainer = SelfCorrectingTrainer(
-            model=self.model,
-            dataset=self.dataset,
-            corrector=self.corrector,
-            drift_detector=self.drift_detector,
-            config=training_config,
-        )
-        self.history: list[dict[str, Any]] = []
+        # -----------------------------------------
+        # TRAINER
+        # -----------------------------------------
 
-    def _build_dataset(self) -> Dataset:
-        # Lazy import lets these OOP classes be tested independently. In the
-        # user's existing project, keep training/dataset.py in its current place.
+        self.trainer = (
+            SelfCorrectingTrainer(
+                model=self.model,
+                train_dataset=(
+                    self.train_dataset
+                ),
+                validation_dataset=(
+                    self.validation_dataset
+                ),
+                corrector=self.corrector,
+                drift_detector=(
+                    self.drift_detector
+                ),
+                config=training_config,
+            )
+        )
+
+        self.history: list[
+            dict[str, Any]
+        ] = []
+
+    # =====================================================
+    # DATA
+    # =====================================================
+
+    def _build_dataset(
+        self,
+    ) -> Dataset:
+
         try:
-            from training.dataset import WorldModelSequenceDataset
+
+            from training.dataset import (
+                WorldModelSequenceDataset,
+            )
+
         except ImportError as exc:
+
             raise ImportError(
-                "Could not import training.dataset.WorldModelSequenceDataset. "
-                "Place this refactor at your project root beside training/dataset.py."
+                "Could not import "
+                "training.dataset."
+                "WorldModelSequenceDataset."
             ) from exc
 
         return WorldModelSequenceDataset(
-            folder=self.data_config.folder,
-            seq_len=self.data_config.sequence_length,
+            folder=(
+                self.data_config.folder
+            ),
+            seq_len=(
+                self.data_config
+                .sequence_length
+            ),
         )
+
+    def _split_dataset(
+        self,
+        dataset: Dataset,
+    ) -> tuple[Dataset, Dataset]:
+        """
+        Contiguous 80/20 split.
+
+        Prevents sequence/frame leakage
+        between training and validation.
+        """
+
+        sequence_length = (
+            self.data_config
+            .sequence_length
+        )
+
+        # If this is the project's normal
+        # WorldModelSequenceDataset, it exposes
+        # the original frame tensor.
+        if hasattr(
+            dataset,
+            "frames",
+        ):
+
+            total_frames = len(
+                dataset.frames
+            )
+
+            validation_frame = int(
+                total_frames * 0.8
+            )
+
+            # A training sequence beginning at
+            # this index would touch validation.
+            train_end = (
+                validation_frame
+                - sequence_length
+            )
+
+            validation_start = (
+                validation_frame
+            )
+
+        else:
+
+            # Fallback for custom/test datasets.
+            validation_start = int(
+                len(dataset) * 0.8
+            )
+
+            train_end = max(
+                1,
+                validation_start
+                - sequence_length,
+            )
+
+        train_indices = range(
+            0,
+            train_end,
+        )
+
+        validation_indices = range(
+            validation_start,
+            len(dataset),
+        )
+
+        if train_end <= 0:
+            raise ValueError(
+                "Dataset is too small "
+                "for training split."
+            )
+
+        if (
+            validation_start
+            >= len(dataset)
+        ):
+            raise ValueError(
+                "Dataset is too small "
+                "for validation split."
+            )
+
+        return (
+            Subset(
+                dataset,
+                train_indices,
+            ),
+            Subset(
+                dataset,
+                validation_indices,
+            ),
+        )
+
+    # =====================================================
+    # PIPELINE-SPECIFIC CORRECTOR
+    # =====================================================
 
     @abstractmethod
-    def build_corrector(self) -> CorrectionStrategy:
+    def build_corrector(
+        self,
+    ) -> CorrectionStrategy:
+
         raise NotImplementedError
 
-    def validate_pipeline(self) -> None:
-        """Subclasses may add pipeline-specific configuration checks."""
+    def validate_pipeline(
+        self,
+    ) -> None:
+        """
+        Subclasses may add
+        configuration checks.
+        """
 
-    def run(self) -> list[dict[str, Any]]:
-        checkpoint_dir = Path(self.training_config.checkpoint_folder)
-        history_dir = Path(self.training_config.history_folder)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        history_dir.mkdir(parents=True, exist_ok=True)
+    # =====================================================
+    # TRAINING
+    # =====================================================
 
-        print(f"Pipeline: {self.pipeline_name}")
-        print(f"Training device: {self.trainer.device}")
+    def run(
+        self,
+    ) -> list[dict[str, Any]]:
 
-        best_loss = float("inf")
-        for epoch in range(1, self.training_config.epochs + 1):
-            result = self.trainer.train_epoch(epoch=epoch - 1)
-            epoch_record = {"epoch": epoch, **result.to_dict()}
-            self.history.append(epoch_record)
-            self.report_epoch(epoch, result)
+        checkpoint_dir = Path(
+            self.training_config
+            .checkpoint_folder
+        )
 
-            if result.average_loss < best_loss:
-                best_loss = result.average_loss
-                self.save_best_model(epoch, result)
-                print("  Best model updated.")
+        history_dir = Path(
+            self.training_config
+            .history_folder
+        )
+
+        checkpoint_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        history_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        print(
+            f"Pipeline: "
+            f"{self.pipeline_name}"
+        )
+
+        print(
+            f"Training device: "
+            f"{self.trainer.device}"
+        )
+
+        best_validation_loss = float(
+            "inf"
+        )
+
+        best_epoch = None
+
+        for epoch in range(
+            1,
+            self.training_config.epochs
+            + 1,
+        ):
+
+            # ----------------------------------
+            # TRAIN
+            # ----------------------------------
+
+            train_result = (
+                self.trainer
+                .train_epoch(
+                    epoch=epoch - 1
+                )
+            )
+
+            # ----------------------------------
+            # VALIDATE
+            # ----------------------------------
+
+            validation_result = (
+                self.trainer
+                .validate_epoch()
+            )
+
+            # ----------------------------------
+            # HISTORY
+            # ----------------------------------
+
+            epoch_record = {
+                "epoch": epoch,
+
+                "training_loss":
+                    train_result.average_loss,
+
+                "validation_loss":
+                    validation_result.average_loss,
+
+                "training":
+                    train_result.to_dict(),
+
+                "validation":
+                    validation_result.to_dict(),
+            }
+
+            self.history.append(
+                epoch_record
+            )
+
+            # ----------------------------------
+            # REPORT
+            # ----------------------------------
+
+            self.report_epoch(
+                epoch,
+                train_result,
+                validation_result,
+            )
+
+            # ----------------------------------
+            # SAVE BEST MODEL BY VALIDATION
+            # ----------------------------------
+
+            if (
+                validation_result
+                .average_loss
+                < best_validation_loss
+            ):
+
+                best_validation_loss = (
+                    validation_result
+                    .average_loss
+                )
+
+                best_epoch = epoch
+
+                self.save_best_model(
+                    epoch,
+                    train_result,
+                    validation_result,
+                )
+
+                print(
+                    "  Best validation "
+                    "model updated."
+                )
 
         self.save_history()
-        print(f"Training complete. Best loss: {best_loss:.6f}")
+
+        print(
+            "\nTraining complete."
+        )
+
+        print(
+            "Best epoch:",
+            best_epoch,
+        )
+
+        print(
+            "Best validation loss:",
+            f"{best_validation_loss:.6f}",
+        )
+
         return self.history
 
-    def report_epoch(self, epoch: int, result: EpochResult) -> None:
+    # =====================================================
+    # REPORTING
+    # =====================================================
+
+    def report_epoch(
+        self,
+        epoch: int,
+        train_result: EpochResult,
+        validation_result:
+            ValidationResult,
+    ) -> None:
+
         mean_error_text = (
-            f"{result.mean_correction_error:.6f}"
-            if result.mean_correction_error is not None
+            f"{train_result.mean_correction_error:.6f}"
+            if (
+                train_result
+                .mean_correction_error
+                is not None
+            )
             else "n/a"
         )
+
         print(
-            f"Epoch {epoch}/{self.training_config.epochs} | "
-            f"loss={result.average_loss:.6f} | "
-            f"events={result.correction_events} | "
-            f"samples_corrected={result.corrected_samples} | "
-            f"mean_correction_error={mean_error_text}"
+            f"\nEpoch "
+            f"{epoch}/"
+            f"{self.training_config.epochs}"
         )
-        self.after_epoch(result)
 
-    def after_epoch(self, result: EpochResult) -> None:
-        """Optional subclass hook for warnings or specialised reporting."""
+        print(
+            f"  Training Loss:   "
+            f"{train_result.average_loss:.6f}"
+        )
 
-    def save_best_model(self, epoch: int, result: EpochResult) -> None:
-        checkpoint_dir = Path(self.training_config.checkpoint_folder)
+        print(
+            f"  Validation Loss: "
+            f"{validation_result.average_loss:.6f}"
+        )
 
-        # Raw state_dict keeps compatibility with rendering code that expects
-        # torch.load(path) to return model weights directly.
+        print(
+            f"  Train Drift:     "
+            f"{train_result.mean_drift_error:.6f}"
+        )
+
+        print(
+            f"  Validation Drift:"
+            f" "
+            f"{validation_result.mean_drift_error:.6f}"
+        )
+
+        print(
+            f"  Correction events: "
+            f"{train_result.correction_events}"
+        )
+
+        print(
+            f"  Samples corrected: "
+            f"{train_result.corrected_samples}"
+        )
+
+        print(
+            f"  Mean correction "
+            f"error: "
+            f"{mean_error_text}"
+        )
+
+        self.after_epoch(
+            train_result
+        )
+
+    def after_epoch(
+        self,
+        result: EpochResult,
+    ) -> None:
+
+        """
+        Optional subclass hook.
+        """
+
+    # =====================================================
+    # CHECKPOINTING
+    # =====================================================
+
+    def save_best_model(
+        self,
+        epoch: int,
+        train_result: EpochResult,
+        validation_result:
+            ValidationResult,
+    ) -> None:
+
+        checkpoint_dir = Path(
+            self.training_config
+            .checkpoint_folder
+        )
+
+        # Raw weights used by rendering code.
         torch.save(
             self.model.state_dict(),
-            checkpoint_dir / self.model_filename,
+            checkpoint_dir
+            / self.model_filename,
         )
 
+        # Full checkpoint for research/
+        # reproducibility.
         torch.save(
             {
-                "pipeline": self.pipeline_name,
-                "epoch": epoch,
-                "best_loss": result.average_loss,
-                "model_state_dict": self.model.state_dict(),
-                "optimizer_state_dict": self.trainer.optimizer.state_dict(),
-                "configs": serialise_configs(
-                    data=self.data_config,
-                    model=self.model_config,
-                    drift=self.drift_config,
-                    training=self.training_config,
-                ),
+                "pipeline":
+                    self.pipeline_name,
+
+                "epoch":
+                    epoch,
+
+                "best_validation_loss":
+                    validation_result
+                    .average_loss,
+
+                "training_loss":
+                    train_result
+                    .average_loss,
+
+                "validation_loss":
+                    validation_result
+                    .average_loss,
+
+                "training_metrics":
+                    train_result
+                    .to_dict(),
+
+                "validation_metrics":
+                    validation_result
+                    .to_dict(),
+
+                "model_state_dict":
+                    self.model
+                    .state_dict(),
+
+                "optimizer_state_dict":
+                    self.trainer
+                    .optimizer
+                    .state_dict(),
+
+                "configs":
+                    serialise_configs(
+                        data=(
+                            self.data_config
+                        ),
+                        model=(
+                            self.model_config
+                        ),
+                        drift=(
+                            self.drift_config
+                        ),
+                        training=(
+                            self.training_config
+                        ),
+                    ),
             },
-            checkpoint_dir / self.checkpoint_filename,
+
+            checkpoint_dir
+            / self.checkpoint_filename,
         )
 
-    def save_history(self) -> None:
-        history_path = Path(self.training_config.history_folder) / self.history_filename
-        with history_path.open("w", encoding="utf-8") as file:
-            json.dump(self.history, file, indent=2)
+    # =====================================================
+    # HISTORY
+    # =====================================================
+
+    def save_history(
+        self,
+    ) -> None:
+
+        history_path = (
+            Path(
+                self.training_config
+                .history_folder
+            )
+            / self.history_filename
+        )
+
+        with history_path.open(
+            "w",
+            encoding="utf-8",
+        ) as file:
+
+            json.dump(
+                self.history,
+                file,
+                indent=2,
+            )
