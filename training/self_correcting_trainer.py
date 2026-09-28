@@ -77,13 +77,13 @@ class SelfCorrectingTrainer:
             warmup_epochs, config, "warmup_epochs", 3
         ))
         self.motion_weight = float(self._resolve(
-            motion_weight, config, "motion_weight", 10.0
+            motion_weight, config, "motion_weight", 5.0
         ))
         self.foreground_weight = float(self._resolve(
             foreground_weight, config, "foreground_weight", 2.0
         ))
         self.motion_threshold = float(self._resolve(
-            motion_threshold, config, "motion_threshold", 0.02
+            motion_threshold, config, "motion_threshold", 0.04
         ))
         self.foreground_threshold = float(self._resolve(
             foreground_threshold, config, "foreground_threshold", 0.05
