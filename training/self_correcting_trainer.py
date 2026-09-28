@@ -6,7 +6,7 @@ Training:
 - no correction during training
 
 Validation:
-- autoregressive
+- teacher-forced
 - no correction
 - held-out data only
 
@@ -755,10 +755,11 @@ class SelfCorrectingTrainer:
         self,
     ) -> EpochResult:
         """
-        Validation is deliberately autoregressive and correction-free.
+        Validation is teacher-forced and correction-free.
 
-        This tests whether the learned dynamics remain stable when the
-        model must consume its own predictions.
+        It measures one-step predictive quality on held-out data and is
+        used only for checkpoint selection. Long-horizon autoregressive
+        stability is evaluated separately during rollout.
         """
 
         if (
@@ -922,9 +923,13 @@ class SelfCorrectingTrainer:
                         .cpu()
                     )
 
-                    # Autoregressive validation.
+                    # Teacher-forced validation for checkpoint selection.
+                    # The model is evaluated on unseen validation frames,
+                    # but each next input is the real previous frame.
+                    # Long-horizon autoregressive stability is evaluated
+                    # separately during the final rollout experiment.
                     current_input = (
-                        prediction.detach()
+                        real_next
                     )
 
                 sequence_loss = (
