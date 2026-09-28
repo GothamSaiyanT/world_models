@@ -53,25 +53,14 @@ class SelfCorrectingPipeline(ABC):
         dataset: Dataset | None = None,
     ) -> None:
 
-        self.data_config = (
-            data_config
-        )
+        self.data_config = data_config
+        self.model_config = model_config
+        self.drift_config = drift_config
+        self.training_config = training_config
 
-        self.model_config = (
-            model_config
-        )
-
-        self.drift_config = (
-            drift_config
-        )
-
-        self.training_config = (
-            training_config
-        )
-
-        # -----------------------------------------
-        # LOAD COMPLETE DATASET
-        # -----------------------------------------
+        # =====================================================
+        # LOAD DATASET
+        # =====================================================
 
         self.dataset = (
             dataset
@@ -79,18 +68,9 @@ class SelfCorrectingPipeline(ABC):
             else self._build_dataset()
         )
 
-        # -----------------------------------------
-        # CONTIGUOUS 80/20 SPLIT
-        #
-        # For 10,000 frames and seq_len=16:
-        #
-        # train starts: 0 -> 7983
-        # validation starts: 8000 -> end
-        #
-        # This intentionally leaves a 16-start
-        # gap so training sequences never overlap
-        # validation frames.
-        # -----------------------------------------
+        # =====================================================
+        # CONTIGUOUS 80/20 TRAIN/VALIDATION SPLIT
+        # =====================================================
 
         (
             self.train_dataset,
@@ -106,26 +86,28 @@ class SelfCorrectingPipeline(ABC):
 
         print(
             "Validation sequences:",
-            len(
-                self.validation_dataset
-            ),
+            len(self.validation_dataset),
         )
 
-        # -----------------------------------------
+        # =====================================================
         # MODEL
-        # -----------------------------------------
+        # =====================================================
 
         self.model = WorldModel(
             model_config
         )
 
-        self.drift_detector = (
-            DriftDetector(
-                metric=(
-                    drift_config.metric
-                )
-            )
+        # =====================================================
+        # DRIFT DETECTOR
+        # =====================================================
+
+        self.drift_detector = DriftDetector(
+            metric=drift_config.metric
         )
+
+        # =====================================================
+        # CORRECTION STRATEGY
+        # =====================================================
 
         self.corrector = (
             self.build_corrector()
@@ -133,16 +115,14 @@ class SelfCorrectingPipeline(ABC):
 
         self.validate_pipeline()
 
-        # -----------------------------------------
+        # =====================================================
         # TRAINER
-        # -----------------------------------------
+        # =====================================================
 
         self.trainer = (
             SelfCorrectingTrainer(
                 model=self.model,
-                train_dataset=(
-                    self.train_dataset
-                ),
+                train_dataset=self.train_dataset,
                 validation_dataset=(
                     self.validation_dataset
                 ),
@@ -158,32 +138,20 @@ class SelfCorrectingPipeline(ABC):
             dict[str, Any]
         ] = []
 
-    # =====================================================
+    # =========================================================
     # DATA
-    # =====================================================
+    # =========================================================
 
     def _build_dataset(
         self,
     ) -> Dataset:
 
-        try:
-
-            from training.dataset import (
-                WorldModelSequenceDataset,
-            )
-
-        except ImportError as exc:
-
-            raise ImportError(
-                "Could not import "
-                "training.dataset."
-                "WorldModelSequenceDataset."
-            ) from exc
+        from training.dataset import (
+            WorldModelSequenceDataset,
+        )
 
         return WorldModelSequenceDataset(
-            folder=(
-                self.data_config.folder
-            ),
+            folder=self.data_config.folder,
             seq_len=(
                 self.data_config
                 .sequence_length
@@ -197,8 +165,8 @@ class SelfCorrectingPipeline(ABC):
         """
         Contiguous 80/20 split.
 
-        Prevents sequence/frame leakage
-        between training and validation.
+        This avoids leakage between overlapping
+        training and validation sequences.
         """
 
         sequence_length = (
@@ -206,9 +174,10 @@ class SelfCorrectingPipeline(ABC):
             .sequence_length
         )
 
-        # If this is the project's normal
-        # WorldModelSequenceDataset, it exposes
-        # the original frame tensor.
+        # -----------------------------------------------------
+        # Normal project dataset
+        # -----------------------------------------------------
+
         if hasattr(
             dataset,
             "frames",
@@ -222,8 +191,8 @@ class SelfCorrectingPipeline(ABC):
                 total_frames * 0.8
             )
 
-            # A training sequence beginning at
-            # this index would touch validation.
+            # Prevent a training sequence from
+            # crossing into validation frames.
             train_end = (
                 validation_frame
                 - sequence_length
@@ -233,9 +202,12 @@ class SelfCorrectingPipeline(ABC):
                 validation_frame
             )
 
+        # -----------------------------------------------------
+        # Fallback
+        # -----------------------------------------------------
+
         else:
 
-            # Fallback for custom/test datasets.
             validation_start = int(
                 len(dataset) * 0.8
             )
@@ -244,6 +216,23 @@ class SelfCorrectingPipeline(ABC):
                 1,
                 validation_start
                 - sequence_length,
+            )
+
+        if train_end <= 0:
+
+            raise ValueError(
+                "Dataset is too small "
+                "for training split."
+            )
+
+        if (
+            validation_start
+            >= len(dataset)
+        ):
+
+            raise ValueError(
+                "Dataset is too small "
+                "for validation split."
             )
 
         train_indices = range(
@@ -256,21 +245,6 @@ class SelfCorrectingPipeline(ABC):
             len(dataset),
         )
 
-        if train_end <= 0:
-            raise ValueError(
-                "Dataset is too small "
-                "for training split."
-            )
-
-        if (
-            validation_start
-            >= len(dataset)
-        ):
-            raise ValueError(
-                "Dataset is too small "
-                "for validation split."
-            )
-
         return (
             Subset(
                 dataset,
@@ -282,9 +256,9 @@ class SelfCorrectingPipeline(ABC):
             ),
         )
 
-    # =====================================================
+    # =========================================================
     # PIPELINE-SPECIFIC CORRECTOR
-    # =====================================================
+    # =========================================================
 
     @abstractmethod
     def build_corrector(
@@ -296,14 +270,50 @@ class SelfCorrectingPipeline(ABC):
     def validate_pipeline(
         self,
     ) -> None:
+
         """
-        Subclasses may add
-        configuration checks.
+        Subclasses may perform
+        additional validation.
         """
 
-    # =====================================================
+    # =========================================================
+    # CHECKPOINT SELECTION SCORE
+    # =========================================================
+
+    @staticmethod
+    def calculate_validation_score(
+        validation_result:
+            ValidationResult,
+    ) -> float:
+        """
+        Select checkpoints based on the parts
+        of the frame that matter most to this
+        project.
+
+        Average whole-frame MSE can look very
+        good even when the tiny moving ball is
+        missing.
+
+        Therefore checkpoint selection uses:
+
+            motion loss
+            +
+            foreground loss
+
+        instead of whole-frame validation loss.
+        """
+
+        return float(
+            validation_result
+            .average_motion_loss
+            +
+            validation_result
+            .average_foreground_loss
+        )
+
+    # =========================================================
     # TRAINING
-    # =====================================================
+    # =========================================================
 
     def run(
         self,
@@ -339,6 +349,15 @@ class SelfCorrectingPipeline(ABC):
             f"{self.trainer.device}"
         )
 
+        # -----------------------------------------------------
+        # We now select checkpoints using the
+        # motion + foreground validation score.
+        # -----------------------------------------------------
+
+        best_selection_score = float(
+            "inf"
+        )
+
         best_validation_loss = float(
             "inf"
         )
@@ -351,9 +370,9 @@ class SelfCorrectingPipeline(ABC):
             + 1,
         ):
 
-            # ----------------------------------
+            # =================================================
             # TRAIN
-            # ----------------------------------
+            # =================================================
 
             train_result = (
                 self.trainer
@@ -362,58 +381,93 @@ class SelfCorrectingPipeline(ABC):
                 )
             )
 
-            # ----------------------------------
+            # =================================================
             # VALIDATE
-            # ----------------------------------
+            # =================================================
 
             validation_result = (
                 self.trainer
                 .validate_epoch()
             )
 
-            # ----------------------------------
-            # HISTORY
-            # ----------------------------------
+            # =================================================
+            # CHECKPOINT SELECTION SCORE
+            # =================================================
+
+            validation_score = (
+                self.calculate_validation_score(
+                    validation_result
+                )
+            )
+
+            # =================================================
+            # SAVE HISTORY
+            # =================================================
 
             epoch_record = {
-                "epoch": epoch,
+
+                "epoch":
+                    epoch,
 
                 "training_loss":
-                    train_result.average_loss,
+                    train_result
+                    .average_loss,
 
                 "validation_loss":
-                    validation_result.average_loss,
+                    validation_result
+                    .average_loss,
+
+                "validation_motion_loss":
+                    validation_result
+                    .average_motion_loss,
+
+                "validation_foreground_loss":
+                    validation_result
+                    .average_foreground_loss,
+
+                "validation_selection_score":
+                    validation_score,
 
                 "training":
-                    train_result.to_dict(),
+                    train_result
+                    .to_dict(),
 
                 "validation":
-                    validation_result.to_dict(),
+                    validation_result
+                    .to_dict(),
             }
 
             self.history.append(
                 epoch_record
             )
 
-            # ----------------------------------
-            # REPORT
-            # ----------------------------------
+            # =================================================
+            # REPORT RESULTS
+            # =================================================
 
             self.report_epoch(
                 epoch,
                 train_result,
                 validation_result,
+                validation_score,
             )
 
-            # ----------------------------------
-            # SAVE BEST MODEL BY VALIDATION
-            # ----------------------------------
+            # =================================================
+            # SAVE BEST MODEL
+            #
+            # IMPORTANT:
+            # Selection uses motion + foreground
+            # instead of normal validation loss.
+            # =================================================
 
             if (
-                validation_result
-                .average_loss
-                < best_validation_loss
+                validation_score
+                < best_selection_score
             ):
+
+                best_selection_score = (
+                    validation_score
+                )
 
                 best_validation_loss = (
                     validation_result
@@ -423,15 +477,26 @@ class SelfCorrectingPipeline(ABC):
                 best_epoch = epoch
 
                 self.save_best_model(
-                    epoch,
-                    train_result,
-                    validation_result,
+                    epoch=epoch,
+                    train_result=(
+                        train_result
+                    ),
+                    validation_result=(
+                        validation_result
+                    ),
+                    validation_score=(
+                        validation_score
+                    ),
                 )
 
                 print(
-                    "  Best validation "
-                    "model updated."
+                    "  Best motion-aware "
+                    "validation model saved."
                 )
+
+        # =====================================================
+        # SAVE TRAINING HISTORY
+        # =====================================================
 
         self.save_history()
 
@@ -445,15 +510,22 @@ class SelfCorrectingPipeline(ABC):
         )
 
         print(
-            "Best validation loss:",
+            "Best whole-frame "
+            "validation loss:",
             f"{best_validation_loss:.6f}",
+        )
+
+        print(
+            "Best motion-aware "
+            "selection score:",
+            f"{best_selection_score:.6f}",
         )
 
         return self.history
 
-    # =====================================================
+    # =========================================================
     # REPORTING
-    # =====================================================
+    # =========================================================
 
     def report_epoch(
         self,
@@ -461,6 +533,7 @@ class SelfCorrectingPipeline(ABC):
         train_result: EpochResult,
         validation_result:
             ValidationResult,
+        validation_score: float,
     ) -> None:
 
         mean_error_text = (
@@ -480,39 +553,57 @@ class SelfCorrectingPipeline(ABC):
         )
 
         print(
-            f"  Training Loss:   "
+            f"  Training Loss:              "
             f"{train_result.average_loss:.6f}"
         )
 
         print(
-            f"  Validation Loss: "
+            f"  Validation Loss:            "
             f"{validation_result.average_loss:.6f}"
         )
 
         print(
-            f"  Train Drift:     "
+            f"  Validation Motion Loss:     "
+            f"{validation_result.average_motion_loss:.6f}"
+        )
+
+        print(
+            f"  Validation Foreground Loss: "
+            f"{validation_result.average_foreground_loss:.6f}"
+        )
+
+        print(
+            f"  Validation Selection Score: "
+            f"{validation_score:.6f}"
+        )
+
+        print(
+            f"  Training Mean Drift:        "
             f"{train_result.mean_drift_error:.6f}"
         )
 
         print(
-            f"  Validation Drift:"
-            f" "
+            f"  Validation Mean Drift:      "
             f"{validation_result.mean_drift_error:.6f}"
         )
 
         print(
-            f"  Correction events: "
+            f"  Validation P90 Drift:       "
+            f"{validation_result.p90_drift_error:.6f}"
+        )
+
+        print(
+            f"  Correction events:          "
             f"{train_result.correction_events}"
         )
 
         print(
-            f"  Samples corrected: "
+            f"  Samples corrected:          "
             f"{train_result.corrected_samples}"
         )
 
         print(
-            f"  Mean correction "
-            f"error: "
+            f"  Mean correction error:      "
             f"{mean_error_text}"
         )
 
@@ -529,9 +620,9 @@ class SelfCorrectingPipeline(ABC):
         Optional subclass hook.
         """
 
-    # =====================================================
+    # =========================================================
     # CHECKPOINTING
-    # =====================================================
+    # =========================================================
 
     def save_best_model(
         self,
@@ -539,6 +630,7 @@ class SelfCorrectingPipeline(ABC):
         train_result: EpochResult,
         validation_result:
             ValidationResult,
+        validation_score: float,
     ) -> None:
 
         checkpoint_dir = Path(
@@ -546,15 +638,22 @@ class SelfCorrectingPipeline(ABC):
             .checkpoint_folder
         )
 
-        # Raw weights used by rendering code.
+        # -----------------------------------------------------
+        # Simple model weights
+        # Used by render scripts.
+        # -----------------------------------------------------
+
         torch.save(
             self.model.state_dict(),
             checkpoint_dir
             / self.model_filename,
         )
 
-        # Full checkpoint for research/
-        # reproducibility.
+        # -----------------------------------------------------
+        # Full checkpoint
+        # Useful for reproducibility / research results.
+        # -----------------------------------------------------
+
         torch.save(
             {
                 "pipeline":
@@ -563,10 +662,6 @@ class SelfCorrectingPipeline(ABC):
                 "epoch":
                     epoch,
 
-                "best_validation_loss":
-                    validation_result
-                    .average_loss,
-
                 "training_loss":
                     train_result
                     .average_loss,
@@ -574,6 +669,17 @@ class SelfCorrectingPipeline(ABC):
                 "validation_loss":
                     validation_result
                     .average_loss,
+
+                "validation_motion_loss":
+                    validation_result
+                    .average_motion_loss,
+
+                "validation_foreground_loss":
+                    validation_result
+                    .average_foreground_loss,
+
+                "validation_selection_score":
+                    validation_score,
 
                 "training_metrics":
                     train_result
@@ -613,9 +719,9 @@ class SelfCorrectingPipeline(ABC):
             / self.checkpoint_filename,
         )
 
-    # =====================================================
+    # =========================================================
     # HISTORY
-    # =====================================================
+    # =========================================================
 
     def save_history(
         self,
