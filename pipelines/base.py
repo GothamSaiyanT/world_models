@@ -81,16 +81,70 @@ class SelfCorrectingPipeline(ABC):
     def _split_dataset(
         self,
         dataset: Dataset,
-    ) -> tuple[Dataset, Dataset]:
+        ) -> tuple[Dataset, Dataset]:
         """
-        Create a contiguous 80/20 split.
+        Contiguous 80/20 train/validation split.
 
-        Because sequence samples overlap in time, random_split() is avoided.
-        A sequence-length gap is left before validation to prevent leakage.
+        Leaves a sequence-length gap so training
+        sequences do not overlap validation frames.
         """
+
         sequence_length = self.data_config.sequence_length
 
-        total_frames = len(dataset) + sequence_length
+        dataset_length = len(dataset)
+
+        # WorldModelSequenceDataset length is:
+        # total_frames - sequence_length
+        total_frames = dataset_length + sequence_length
+
         split_frame = int(total_frames * 0.8)
 
+        # Example with 10,000 frames and seq_len=16:
+        # split_frame = 8000
+        # train indices = 0..7983
+        # validation indices = 8000..9983
+
         train_end = split_frame - sequence_length
+        validation_start = split_frame
+
+        print("Dataset sequences:", dataset_length)
+        print("Estimated total frames:", total_frames)
+        print("Split frame:", split_frame)
+        print("Train end:", train_end)
+        print("Validation start:", validation_start)
+
+        if train_end <= 0:
+            raise ValueError(
+                "Training split is empty."
+            )
+
+        if validation_start >= dataset_length:
+            raise ValueError(
+                "Validation split is empty."
+            )
+
+        train_indices = list(
+            range(0, train_end)
+        )
+
+        validation_indices = list(
+            range(
+                validation_start,
+                dataset_length
+            )
+        )
+
+        train_dataset = Subset(
+            dataset,
+            train_indices
+        )
+
+        validation_dataset = Subset(
+            dataset,
+            validation_indices
+        )
+
+        return (
+            train_dataset,
+            validation_dataset
+        )
