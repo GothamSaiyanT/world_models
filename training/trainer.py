@@ -83,8 +83,8 @@ class Trainer:
         )
 
         self.criterion = StableMotionWeightedMSELoss(
-            motion_weight=2.0,
-            motion_threshold=0.05
+            motion_weight=10.0,
+            motion_threshold=0.02
         )
 
         self.optimizer = Adam(
