@@ -46,7 +46,7 @@ def main() -> None:
             fixed_interval=10,
         ),
         training_config=TrainingConfig(
-            epochs=70,
+            epochs=20,
             learning_rate=0.001,
             batch_size=32,
             num_workers=2,
