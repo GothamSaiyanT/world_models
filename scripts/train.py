@@ -1,5 +1,7 @@
 import os
 
+from torch.utils.data import Subset
+
 from training.data_collector import DataCollector
 from training.dataset import WorldModelSequenceDataset
 from training.trainer import Trainer
@@ -11,8 +13,6 @@ def main():
     os.makedirs("data", exist_ok=True)
     os.makedirs("models", exist_ok=True)
 
-    # Keep the existing dataset.
-    # Data is only collected when frames.npy does not exist.
     if not os.path.exists("data/frames.npy"):
 
         collector = DataCollector()
@@ -21,64 +21,134 @@ def main():
             num_steps=10000
         )
 
-    dataset = WorldModelSequenceDataset(
+    full_dataset = WorldModelSequenceDataset(
         folder="data",
         seq_len=16
     )
 
-    # Create a completely new model with random parameters
+    # -------------------------------------------------
+    # CONTIGUOUS 80/20 SPLIT
+    # -------------------------------------------------
+
+    # Training sequences use frames from approximately
+    # frame 0 to frame 7999.
+    train_indices = list(
+        range(0, 7984)
+    )
+
+    # Validation begins at frame 8000.
+    # We leave a small sequence gap so a training
+    # sequence does not cross into validation frames.
+    validation_indices = list(
+        range(8000, len(full_dataset))
+    )
+
+    train_dataset = Subset(
+        full_dataset,
+        train_indices
+    )
+
+    validation_dataset = Subset(
+        full_dataset,
+        validation_indices
+    )
+
+    print(
+        "Training sequences:",
+        len(train_dataset)
+    )
+
+    print(
+        "Validation sequences:",
+        len(validation_dataset)
+    )
+
     model = WorldModel(
         latent_size=128,
         hidden_size=128,
         image_size=64
     )
 
-    checkpoint = "models/best_world_model.npz"
+    checkpoint = (
+        "models/best_world_model.npz"
+    )
 
-    # Delete the previous model checkpoint
     if os.path.exists(checkpoint):
-        os.remove(checkpoint)
-        print("Old checkpoint deleted.")
 
-    # Always start from the beginning
-    start_epoch = 0
-    best_loss = float("inf")
+        os.remove(checkpoint)
+
+        print(
+            "Old checkpoint deleted."
+        )
+
+    best_validation_loss = float(
+        "inf"
+    )
 
     trainer = Trainer(
         model=model,
-        dataset=dataset,
+        train_dataset=train_dataset,
+        validation_dataset=validation_dataset,
         learning_rate=0.001,
         batch_size=32
     )
 
+    # For tonight's first run
     epochs = 20
 
     print("Starting fresh training.")
     print("Epoch target:", epochs)
 
-    for epoch in range(start_epoch, epochs):
+    for epoch in range(epochs):
 
-        loss = trainer.train_epoch()
+        train_loss = trainer.train_epoch()
 
-        print(
-            f"Epoch {epoch + 1}/{epochs} "
-            f"Loss: {loss:.6f}"
+        validation_loss = (
+            trainer.validate_epoch()
         )
 
-        if loss < best_loss:
+        print(
+            f"\nEpoch {epoch + 1}/{epochs}"
+        )
 
-            best_loss = loss
+        print(
+            f"Training Loss:   "
+            f"{train_loss:.6f}"
+        )
+
+        print(
+            f"Validation Loss: "
+            f"{validation_loss:.6f}"
+        )
+
+        # Save based on VALIDATION performance
+        if (
+            validation_loss
+            < best_validation_loss
+        ):
+
+            best_validation_loss = (
+                validation_loss
+            )
 
             model.save(
                 checkpoint,
                 epoch=epoch + 1,
-                best_loss=best_loss
+                best_loss=best_validation_loss
             )
 
-            print("Best model saved.")
+            print(
+                "Best validation model saved."
+            )
 
-    print("\nTraining Complete!")
-    print(f"Best Loss: {best_loss:.6f}")
+    print(
+        "\nTraining Complete!"
+    )
+
+    print(
+        "Best Validation Loss:",
+        f"{best_validation_loss:.6f}"
+    )
 
 
 if __name__ == "__main__":
