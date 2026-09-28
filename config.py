@@ -6,10 +6,14 @@ from typing import Any, Dict, Literal, Optional
 class DataConfig:
     folder: str = "data"
     sequence_length: int = 16
+    # Share of the data held back for validation. Use 0 to turn it off.
+    validation_fraction: float = 0.2
 
     def __post_init__(self) -> None:
         if self.sequence_length < 1:
             raise ValueError("sequence_length must be at least 1")
+        if not 0 <= self.validation_fraction < 0.5:
+            raise ValueError("validation_fraction must be from 0 up to 0.5")
 
 
 @dataclass(frozen=True)
@@ -52,7 +56,7 @@ class DriftConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    epochs: int = 30
+    epochs: int = 20
     learning_rate: float = 0.001
     batch_size: int = 32
     num_workers: int = 2
